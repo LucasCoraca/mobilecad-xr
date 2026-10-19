@@ -31,6 +31,12 @@ bool Scene::addTessellation(const std::string& name, const uint8_t* data, size_t
         if (m.faceFirst[id] < 0) m.faceFirst[id] = (int)v;
         m.faceCount[id] = (int)v - m.faceFirst[id] + 1;
     }
+    for (size_t sgm = 0; sgm < m.edgeSegments(); ++sgm) {           // segments come grouped by edge
+        int id = (int)m.edges[sgm * 7 + 6]; if (id < 0 || id > 1000000) continue;
+        if ((int)m.edgeFirst.size() <= id) { m.edgeFirst.resize(id + 1, -1); m.edgeCount.resize(id + 1, 0); }
+        if (m.edgeFirst[id] < 0) m.edgeFirst[id] = (int)sgm;
+        m.edgeCount[id] = (int)sgm - m.edgeFirst[id] + 1;
+    }
     meshes.push_back(std::move(m)); ++version;
     return true;
 }
@@ -50,6 +56,29 @@ Hit Scene::pick(V3 o, V3 d) const {
         }
     }
     if (best.mesh < 0) best.t = 0;
+    return best;
+}
+
+Hit Scene::pickEdge(V3 o, V3 d, float tanTol, float maxT) const {
+    Hit best; float bestScore = 1e30f;
+    for (size_t mi = 0; mi < meshes.size(); ++mi) {
+        const auto& e = meshes[mi].edges;
+        for (size_t i = 0; i + 6 < e.size(); i += 7) {
+            V3 a{e[i], e[i + 1], e[i + 2]}, b{e[i + 3], e[i + 4], e[i + 5]}, u = b - a;
+            // closest points between the ray o + t d and the segment a + s u
+            float uu = dot(u, u), ud = dot(u, d); V3 w = a - o;
+            float denom = uu - ud * ud;                                   // |d| = 1
+            float s = 0, t = 0;
+            if (uu < 1e-12f) { s = 0; t = dot(w, d); }
+            else if (std::fabs(denom) < 1e-9f) { s = 0; t = dot(w, d); }
+            else { s = (ud * dot(w, d) - dot(w, u)) / denom; s = std::max(0.f, std::min(1.f, s)); t = dot(a + u * s - o, d); }
+            if (t <= 1e-6f || t > maxT) continue;
+            V3 p = a + u * s; float dist = len(p - (o + d * t));
+            if (dist > tanTol * t) continue;
+            float score = dist / (tanTol * t) + t * 1e-6f;                 // closest to the ray, then nearest
+            if (score < bestScore) { bestScore = score; best.mesh = (int)mi; best.face = (int)e[i + 6]; best.t = t; best.point = p; }
+        }
+    }
     return best;
 }
 

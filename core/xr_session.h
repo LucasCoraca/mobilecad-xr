@@ -51,6 +51,8 @@ public:
     Pose head; bool headValid = false;
     /** Test hook: replaces the controllers' input after it is read (desktop --autotest); t = seconds since the first frame. */
     std::function<void(HandInput hands[2], const Pose& head, double t)> inputOverride;
+    /** Called with the head pose while `needsPlacement` is set (the app places its panels; the model is placed here). */
+    std::function<void(const Pose& head)> onPlaced;
 
 private:
     XrInstance instance = XR_NULL_HANDLE; XrSystemId system = XR_NULL_SYSTEM_ID; XrSession session = XR_NULL_HANDLE;

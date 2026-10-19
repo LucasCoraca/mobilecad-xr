@@ -1,5 +1,5 @@
-// MobileCAD XR for Meta Quest 3 (and other Android OpenXR headsets). Reuses MobileCAD's FreeCAD engine from the
-// mobilecad/ submodule: the Kotlin Engine, the JNI bridge (fcbridge) and the packaged runtime (engine/package_runtime.py).
+// MobileCAD XR for Meta Quest 3 (and other Android OpenXR headsets): the whole MobileCAD app from the mobilecad/ submodule
+// (UI, engine bridge, catalog, icons; its packaged FreeCAD runtime via engine/package_runtime.py) plus the XR core.
 import java.util.Properties
 plugins {
     id("com.android.application")
@@ -8,13 +8,8 @@ plugins {
 val mobilecad = rootDir.resolve("../mobilecad")
 val keyProps = Properties().apply {
     val f = file(System.getProperty("user.home") + "/Android/keys/mobilecad-release.properties"); if (f.exists()) f.inputStream().use { load(it) } }
-// MobileCAD sources shared with the phone app, copied in at build time (Engine + the Qt host-activity hook)
-val syncEngine by tasks.registering(Sync::class) {
-    from(mobilecad.resolve("app/app/src/main/java")) { include("app/mobilecad/freecad/Engine.kt", "org/qtproject/qt/android/QtHostAccess.java") }
-    into(layout.buildDirectory.dir("generated/mobilecad/java"))
-}
 android {
-    namespace = "app.mobilecad.xr"
+    namespace = "app.mobilecad"          // MobileCAD's sources use app.mobilecad.R; the store id below is separate
     compileSdk = 34
     defaultConfig {
         applicationId = "app.mobilecad.xr"
@@ -32,8 +27,12 @@ android {
         create("arm64") { dimension = "abi"; ndk { abiFilters += "arm64-v8a" } }
         create("x86") { dimension = "abi"; ndk { abiFilters += "x86_64" } }
     }
-    sourceSets["main"].java.srcDir(layout.buildDirectory.dir("generated/mobilecad/java"))
-    buildFeatures { prefab = true }
+    // MobileCAD's app (its own manifest and launcher activity are not used: XrActivity hosts its UI on the panel)
+    sourceSets["main"].java.srcDir(mobilecad.resolve("app/app/src/main/java"))
+    sourceSets["main"].res.srcDir(mobilecad.resolve("app/app/src/main/res"))
+    sourceSets["main"].assets.srcDir(mobilecad.resolve("app/app/src/main/assets"))
+    buildFeatures { prefab = true; compose = true; buildConfig = false }
+    composeOptions { kotlinCompilerExtensionVersion = "1.5.14" }
     signingConfigs {
         if (keyProps.containsKey("storeFile")) create("release") {
             storeFile = file(keyProps.getProperty("storeFile")); storePassword = keyProps.getProperty("storePassword")
@@ -47,9 +46,16 @@ android {
     compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
     kotlinOptions { jvmTarget = "17" }
 }
-tasks.named("preBuild") { dependsOn(syncEngine) }
 dependencies {
     implementation("org.khronos.openxr:openxr_loader_for_android:1.1.63")
+    // as MobileCAD
+    implementation(platform("androidx.compose:compose-bom:2024.09.00"))
+    implementation("androidx.compose.ui:ui")
+    implementation("androidx.compose.material3:material3")
+    implementation("androidx.compose.material:material-icons-extended")
+    implementation("androidx.activity:activity-compose:1.9.2")
+    implementation("androidx.core:core-ktx:1.13.1")
+    implementation("com.caverock:androidsvg-aar:1.4")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
     implementation(files(mobilecad.resolve("app/app/libs/Qt6Android.jar")))
 }

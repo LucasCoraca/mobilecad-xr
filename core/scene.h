@@ -14,12 +14,19 @@ struct Mesh {
     std::vector<float> edges;   // x1 y1 z1 x2 y2 z2 edgeId   per segment (7 floats)
     float color[3] = {0.81f, 0.84f, 0.86f};
     std::vector<int> faceFirst, faceCount;         // per FreeCAD face id (1-based): its vertex range in tris
+    std::vector<int> edgeFirst, edgeCount;         // per FreeCAD edge id (1-based): its segment range in edges
     unsigned vao = 0, vbo = 0, evao = 0, evbo = 0;   // GL objects, made by the renderer
     size_t triVerts() const { return tris.size() / 7; }
     size_t edgeSegments() const { return edges.size() / 7; }
 };
 
 struct Hit { int mesh = -1; int face = 0; float t = 0; V3 point; };
+/** A picked element: FreeCAD Face<id> ('F') or Edge<id> ('E') of mesh `mesh`. */
+struct ElemRef {
+    int mesh = -1; char kind = 0; int id = 0;
+    bool valid() const { return mesh >= 0 && id > 0; }
+    bool operator==(const ElemRef& o) const { return mesh == o.mesh && kind == o.kind && id == o.id; }
+};
 
 struct Scene {
     std::string title;
@@ -35,6 +42,9 @@ struct Scene {
     float radius() const { return len(max - min) * 0.5f; }
     /** Nearest face hit by a ray given in model coordinates. */
     Hit pick(V3 origin, V3 dir) const;
+    /** Nearest edge passing within `tanTol` * distance of the ray (an angular tolerance), and before `maxT`. */
+    Hit pickEdge(V3 origin, V3 dir, float tanTol, float maxT) const;
+    int find(const std::string& name) const { for (size_t i = 0; i < meshes.size(); ++i) if (meshes[i].name == name) return (int)i; return -1; }
 
     /** Scene bundle (.mcxr): "MCXR1" u32 count, then per object: u16 nameLen, name, 3 x f32 color, u32 size, tessellation. */
     bool loadBundle(const std::string& path);

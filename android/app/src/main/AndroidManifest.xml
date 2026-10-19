@@ -13,10 +13,10 @@
         android:label="MobileCAD XR"
         android:icon="@mipmap/ic_launcher"
         android:allowBackup="false"
-        android:theme="@android:style/Theme.Black.NoTitleBar.Fullscreen">
+        android:theme="@android:style/Theme.Material.NoActionBar.Fullscreen">
         <meta-data android:name="com.oculus.supportedDevices" android:value="quest3|quest3s|quest2|questpro" />
         <activity
-            android:name=".XrActivity"
+            android:name="app.mobilecad.xr.XrActivity"
             android:exported="true"
             android:launchMode="singleTask"
             android:resizeableActivity="false"

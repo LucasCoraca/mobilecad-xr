@@ -243,7 +243,10 @@ bool Headset::frame(Interaction& ia, Renderer& r) {
         XrSpaceLocation hl{XR_TYPE_SPACE_LOCATION}; xrLocateSpace(viewSpace, appSpace, fs.predictedDisplayTime, &hl);
         headValid = (hl.locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT) && (hl.locationFlags & XR_SPACE_LOCATION_ORIENTATION_VALID_BIT);
         if (headValid) head = toPose(hl.pose);
-        if (needsPlacement && headValid && !ia.scene.empty()) { ia.placeModel(head); needsPlacement = false; }
+        if (needsPlacement && headValid) {
+            if (onPlaced) onPlaced(head);
+            if (!ia.scene.empty()) { ia.placeModel(head); needsPlacement = false; }
+        }
         HandInput hin[2]; readHands(fs.predictedDisplayTime, hin);
         if (!firstTime) firstTime = fs.predictedDisplayTime;
         if (inputOverride) inputOverride(hin, head, (fs.predictedDisplayTime - firstTime) * 1e-9);

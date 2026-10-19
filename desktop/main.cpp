@@ -1,17 +1,18 @@
 // MobileCAD XR, desktop build: the same XR core as the Quest app, running against a Linux OpenXR runtime (Monado - with its
 // simulated "qwerty" headset in sim/). Loads scene bundles (.mcxr, exported from MobileCAD by tools/export_scenes.py) and
-// mirrors the left eye into a window.
+// mirrors the left eye into a window. Instead of MobileCAD's Android UI (which only exists on Android) it shows a small
+// stand-in panel with real buttons, so pointing at / clicking the UI panel can be tested here too.
 //
-//   mobilecad-xr-desktop [--screenshot out.ppm --frames N] scene.mcxr|dir ...
+//   mobilecad-xr-desktop [--autotest] [--screenshot out.ppm --frames N] scene.mcxr|dir ...
 #include <dirent.h>
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <string>
 #include <thread>
 #include <vector>
-#include <cmath>
 #include "font8x16.h"
 #include "../core/xr_session.h"
 
@@ -19,31 +20,31 @@ using namespace mcxr;
 
 typedef GLXContext (*CreateContextAttribs)(Display*, GLXFBConfig, GLXContext, Bool, const int*);
 
-/** Info panel: dark rounded card with lines of text (8x16 font, scaled 2x). */
-static std::vector<uint8_t> panel(const std::vector<std::string>& lines, int W, int H) {
-    std::vector<uint8_t> px(W * H * 4, 0);
-    for (int y = 0; y < H; ++y) for (int x = 0; x < W; ++x) {
-        int dx = std::max({0, 16 - x, x - (W - 17)}), dy = std::max({0, 16 - y, y - (H - 17)});
-        if (dx * dx + dy * dy > 256) continue;
-        uint8_t* p = &px[(y * W + x) * 4]; p[0] = 24; p[1] = 28; p[2] = 34; p[3] = 235;
+// ---- a tiny software canvas for the stand-in panel
+struct Canvas {
+    int w, h; std::vector<uint8_t> px;
+    Canvas(int w_, int h_) : w(w_), h(h_), px(w_ * h_ * 4, 0) {}
+    void rect(int x0, int y0, int x1, int y1, uint8_t r, uint8_t g, uint8_t b, int radius = 0) {
+        for (int y = std::max(0, y0); y < std::min(h, y1); ++y) for (int x = std::max(0, x0); x < std::min(w, x1); ++x) {
+            int dx = std::max({0, x0 + radius - x, x - (x1 - 1 - radius)}), dy = std::max({0, y0 + radius - y, y - (y1 - 1 - radius)});
+            if (dx * dx + dy * dy > radius * radius) continue;
+            uint8_t* p = &px[(y * w + x) * 4]; p[0] = r; p[1] = g; p[2] = b; p[3] = 255;
+        }
     }
-    for (size_t li = 0; li < lines.size(); ++li) {
-        int scale = li == 0 ? 3 : 2, y0 = li == 0 ? 18 : 30 + (int)li * 36;
-        uint8_t col[3] = {li == 0 ? (uint8_t)255 : (uint8_t)200, li == 0 ? (uint8_t)255 : (uint8_t)208, li == 0 ? (uint8_t)255 : (uint8_t)216};
-        int x0 = 24;
-        for (char c : lines[li]) {
+    void text(int x0, int y0, const std::string& s, int scale, uint8_t r, uint8_t g, uint8_t b) {
+        for (char c : s) {
             if (c < 32 || c > 126) c = '?';
-            for (int gy = 0; gy < 16; ++gy) for (int gx = 0; gx < 8; ++gx)
-                if (kFont8x16[c - 32][gy] & (0x80 >> gx))
-                    for (int sy = 0; sy < scale; ++sy) for (int sx = 0; sx < scale; ++sx) {
-                        int x = x0 + gx * scale + sx, y = y0 + gy * scale + sy; if (x >= W || y >= H) continue;
-                        uint8_t* p = &px[(y * W + x) * 4]; p[0] = col[0]; p[1] = col[1]; p[2] = col[2]; p[3] = 255;
-                    }
+            for (int gy = 0; gy < 16; ++gy) for (int gx = 0; gx < 8; ++gx) if (kFont8x16[c - 32][gy] & (0x80 >> gx))
+                for (int sy = 0; sy < scale; ++sy) for (int sx = 0; sx < scale; ++sx) {
+                    int x = x0 + gx * scale + sx, y = y0 + gy * scale + sy; if (x < 0 || y < 0 || x >= w || y >= h) continue;
+                    uint8_t* p = &px[(y * w + x) * 4]; p[0] = r; p[1] = g; p[2] = b; p[3] = 255;
+                }
             x0 += 8 * scale;
         }
     }
-    return px;
-}
+};
+struct Button { const char* label; int x0, y0, x1, y1; };
+static const Button kButtons[] = {{"Next file", 80, 560, 760, 720}, {"Clear selection", 840, 560, 1520, 720}, {"Recenter", 80, 780, 760, 940}};
 
 static void writePpm(const char* path, GLuint tex, int w, int h) {
     GLuint fbo; glGenFramebuffers(1, &fbo); glBindFramebuffer(GL_READ_FRAMEBUFFER, fbo);
@@ -54,6 +55,14 @@ static void writePpm(const char* path, GLuint tex, int w, int h) {
     std::fprintf(f, "P6\n%d %d\n255\n", w, h);
     for (int y = h - 1; y >= 0; --y) for (int x = 0; x < w; ++x) std::fwrite(&px[(y * w + x) * 4], 1, 3, f);
     std::fclose(f); std::fprintf(stderr, "mcxr: wrote %s\n", path);
+}
+
+/** Orientation whose -Z points along `d` (for scripted aim poses). */
+static Q lookRot(V3 d) {
+    V3 z = norm(d * -1.f), x = norm(cross(V3{0, 1, 0}, z)), y = cross(z, x);
+    float tr = x.x + y.y + z.z;
+    if (tr > 0) { float s = std::sqrt(tr + 1) * 2; return qnorm(Q{(y.z - z.y) / s, (z.x - x.z) / s, (x.y - y.x) / s, s / 4}); }
+    return axisAngle(V3{0, 1, 0}, 3.14159f);
 }
 
 int main(int argc, char** argv) {
@@ -69,7 +78,7 @@ int main(int argc, char** argv) {
         } else files.push_back(a);
     }
     std::sort(files.begin(), files.end());
-    if (files.empty()) { std::fprintf(stderr, "usage: %s [--screenshot out.ppm --frames N] scene.mcxr|dir ...\n", argv[0]); return 1; }
+    if (files.empty()) { std::fprintf(stderr, "usage: %s [--autotest] [--screenshot out.ppm --frames N] scene.mcxr|dir ...\n", argv[0]); return 1; }
 
     // window + GL 3.3 core context (the OpenXR runtime renders our swapchains; this window only mirrors the left eye)
     Display* dpy = XOpenDisplay(nullptr); if (!dpy) { std::fprintf(stderr, "mcxr: no X display\n"); return 1; }
@@ -93,56 +102,103 @@ int main(int argc, char** argv) {
     std::fprintf(stderr, "mcxr: GL %s / %s\n", (const char*)glGetString(GL_VERSION), (const char*)glGetString(GL_RENDERER));
 
     Renderer renderer; renderer.init();
-    Interaction ia; size_t current = 0; Headset hs; std::string status;
-    auto refreshPanel = [&](const std::string& sel) {
-        std::vector<std::string> lines{ia.scene.title, std::to_string(ia.scene.meshes.size()) + " objects  (" + std::to_string(current + 1) + "/" + std::to_string(files.size()) + ")",
-                                       sel.empty() ? "Click a face to select it" : "Selected: " + sel, "Hold trigger: move   Menu: next file"};
-        auto px = panel(lines, 640, 240); ia.panelTex = renderer.makeTexture(640, 240, px.data(), ia.panelTex); ia.panelW = 640; ia.panelH = 240;
+    Interaction ia; size_t current = 0; Headset hs; bool placePanel = true; int loads = 0;
+    int hot = -1, pressed = -1;                                       // hovered / pressed button
+    std::string lastPick;
+    auto drawPanel = [&] {
+        Canvas c(ia.panel.pxW, ia.panel.pxH);
+        c.rect(0, 0, c.w, c.h, 245, 247, 250);
+        c.rect(0, 0, c.w, 120, 255, 255, 255); c.text(60, 28, "MobileCAD XR", 4, 22, 32, 43);
+        c.text(60, 170, ia.scene.title + "  (" + std::to_string(current + 1) + "/" + std::to_string(files.size()) + ")", 4, 22, 32, 43);
+        c.text(60, 250, std::to_string(ia.scene.meshes.size()) + " objects", 3, 95, 107, 119);
+        c.text(60, 330, ia.selected.empty() ? "Click a face or edge to select it" : ("Selected: " + lastPick + (ia.selected.size() > 1 ? " +" + std::to_string(ia.selected.size() - 1) : "")), 3, 42, 111, 201);
+        c.text(60, 420, "Desktop stand-in: the Quest app shows MobileCAD's full UI here", 2, 138, 150, 163);
+        for (int b = 0; b < 3; ++b) {
+            const Button& k = kButtons[b]; bool on = b == hot;
+            uint8_t r = pressed == b ? 22 : on ? 58 : 42, g = pressed == b ? 81 : on ? 125 : 111, bl = pressed == b ? 160 : on ? 221 : 201;
+            c.rect(k.x0, k.y0, k.x1, k.y1, r, g, bl, 24);
+            int tw = (int)std::strlen(k.label) * 8 * 4; c.text((k.x0 + k.x1 - tw) / 2, (k.y0 + k.y1) / 2 - 32, k.label, 4, 255, 255, 255);
+        }
+        ia.panel.tex = renderer.makeTexture(c.w, c.h, c.px.data(), ia.panel.tex);
     };
     auto load = [&](size_t i) {
-        current = i % files.size();
+        current = i % files.size(); ++loads;
         if (!ia.scene.loadBundle(files[current])) std::fprintf(stderr, "mcxr: cannot read %s\n", files[current].c_str());
         std::fprintf(stderr, "mcxr: loaded %s (%zu objects)\n", ia.scene.title.c_str(), ia.scene.meshes.size());
-        hs.needsPlacement = true; refreshPanel("");
+        hs.needsPlacement = true; ia.selected.clear(); lastPick.clear(); drawPanel();
     };
-    ia.onSelect = [&](const std::string& obj, int face) {
-        std::fprintf(stderr, "mcxr: select %s Face%d\n", obj.c_str(), face); refreshPanel(face ? obj + " Face" + std::to_string(face) : "");
+    auto buttonAt = [&](float x, float y) {
+        for (int b = 0; b < 3; ++b) if (x >= kButtons[b].x0 && x < kButtons[b].x1 && y >= kButtons[b].y0 && y < kButtons[b].y1) return b;
+        return -1;
     };
-    ia.onNextDocument = [&] { load(current + 1); };
+    int panelClicks = 0;
+    ia.panel.visible = true;
+    ia.onPick = [&](const ElemRef& e, V3) {
+        if (e.valid()) lastPick = ia.scene.meshes[e.mesh].name + (e.kind == 'E' ? " Edge" : " Face") + std::to_string(e.id);
+        std::fprintf(stderr, "mcxr: pick %s\n", e.valid() ? lastPick.c_str() : "(nothing)");
+        drawPanel();
+    };
+    ia.onPanelPointer = [&](int action, float x, float y) {
+        int b = buttonAt(x, y);
+        if (action == PanelHover || action == PanelMove) { if (b != hot) { hot = b; drawPanel(); } }
+        else if (action == PanelLeave) { hot = -1; drawPanel(); }
+        else if (action == PanelDown) { pressed = b; drawPanel(); }
+        else if (action == PanelUp) {
+            int was = pressed; pressed = -1;
+            if (was >= 0 && was == b) {
+                ++panelClicks; std::fprintf(stderr, "mcxr: panel button \"%s\"\n", kButtons[b].label);
+                if (b == 0) load(current + 1);
+                else if (b == 1) { ia.selected.clear(); lastPick.clear(); }
+                else if (b == 2) { hs.needsPlacement = true; placePanel = true; }
+            }
+            drawPanel();
+        }
+    };
+    ia.onMenu = [&] { load(current + 1); };
     load(0);
 
     PlatformInit p; p.display = dpy; p.fbConfig = cfg; p.drawable = win; p.context = ctx;
     std::string err;
     if (!hs.create(p, "MobileCAD XR", &err)) { std::fprintf(stderr, "mcxr: %s (is monado-service running?)\n", err.c_str()); return 2; }
     std::fprintf(stderr, "mcxr: OpenXR runtime \"%s\", system \"%s\"\n", hs.runtimeName.c_str(), hs.systemName.c_str());
+    hs.onPlaced = [&](const Pose& head) { if (placePanel) { ia.placePanel(head); placePanel = false; } };
 
-    // --autotest: scripted right hand (aim at the model + click = select; then grab and carry it 25 cm to the right),
-    // checked through the same callbacks a user triggers; the runtime still drives the session and the rendering
-    int autoSelects = 0; V3 movedFrom{}; bool autoDone = false, autoOk = false, aimFrozen = false; Pose frozenAim;
+    // --autotest: a scripted right hand, checked through the same callbacks a user triggers (the runtime still drives the
+    // session and the rendering): 1) click the model = pick  2) grab and carry it 25 cm  3) click the panel's "Next file"
+    struct Step { const char* what; bool ok = false; };
+    std::vector<Step> steps{{"pick a face/edge on the model"}, {"grab + move the model 25 cm"}, {"click the panel's Next file button"}};
+    V3 movedFrom{}; bool movedSet = false, frozen = false, autoDone = false; Pose frozenAim; size_t docBefore = 0;
     if (autotest) {
-        ia.onSelect = [&, prev = ia.onSelect](const std::string& o, int f) { if (f > 0) ++autoSelects; prev(o, f); };
         hs.inputOverride = [&](HandInput h[2], const Pose& head, double t) {
             if (ia.scene.empty() || t < 1.0) return;
-            V3 target = apply(ia.model, ia.scene.center());
-            V3 from = head.pos + V3{0.15f, -0.25f, 0}; V3 d = norm(target - from);
-            // orientation whose -Z points along d
-            V3 z = d * -1.f, x = norm(cross(V3{0, 1, 0}, z)), y = cross(z, x);
-            float tr = x.x + y.y + z.z; Q q;
-            if (tr > 0) { float s = std::sqrt(tr + 1) * 2; q = {(y.z - z.y) / s, (z.x - x.z) / s, (x.y - y.x) / s, s / 4}; }
-            else { q = axisAngle(V3{0, 1, 0}, 3.14159f); }
-            HandInput& r = h[1]; r = {}; r.active = true; r.aim = {from, qnorm(q), 1};
-            if (t > 2.4) { if (!aimFrozen) { frozenAim = r.aim; aimFrozen = true; } r.aim = frozenAim; }   // a real hand keeps its angle
-            r.grip = r.aim;
-            if (t > 1.5 && t < 1.6) r.select = 1;                                   // click: select the face under the ray
-            if (t > 2.5 && t < 4.0) {                                               // grab and carry 25 cm to the right
-                if (movedFrom.x == 0 && movedFrom.y == 0) movedFrom = ia.model.pos;
-                r.squeeze = 1; float k = (float)std::min(1.0, (t - 2.6) / 1.2); if (k > 0) { r.grip.pos = frozenAim.pos + V3{0.25f * k, 0, 0}; r.aim.pos = r.grip.pos; }
-            }
-            if (t > 4.5 && !autoDone) {
-                autoDone = true; float moved = ia.model.pos.x - movedFrom.x;
-                autoOk = autoSelects > 0 && ia.selected.face > 0 && moved > 0.2f && moved < 0.3f;
-                std::fprintf(stderr, "mcxr autotest: selected %s Face%d (%d select events), model moved %.3f m -> %s\n",
-                             ia.selected.mesh >= 0 ? ia.scene.meshes[ia.selected.mesh].name.c_str() : "-", ia.selected.face, autoSelects, moved, autoOk ? "PASS" : "FAIL");
+            HandInput& r = h[1]; r = {}; r.active = true;
+            V3 from = head.pos + V3{0.15f, -0.25f, 0};
+            if (t < 4.2) {
+                V3 target = apply(ia.model, ia.scene.center());
+                r.aim = {from, lookRot(target - from), 1};
+                if (t > 2.4) { if (!frozen) { frozenAim = r.aim; frozen = true; } r.aim = frozenAim; }   // a real hand keeps its angle
+                r.grip = r.aim;
+                if (t > 1.5 && t < 1.6) r.select = 1;
+                if (t > 2.5 && t < 4.0) {
+                    if (!movedSet) { movedFrom = ia.model.pos; movedSet = true; }
+                    r.squeeze = 1; float k = (float)std::min(1.0, (t - 2.6) / 1.2); if (k > 0) { r.grip.pos = frozenAim.pos + V3{0.25f * k, 0, 0}; r.aim.pos = r.grip.pos; }
+                }
+                if (t > 4.0 && !steps[1].ok) { float m = ia.model.pos.x - movedFrom.x; steps[1].ok = m > 0.2f && m < 0.3f; std::fprintf(stderr, "mcxr autotest: model moved %.3f m\n", m); }
+                if (t > 1.7 && !steps[0].ok) steps[0].ok = !ia.selected.empty();
+            } else {
+                // aim at the centre of "Next file" on the panel, then click
+                const Button& b = kButtons[0];
+                float u = (b.x0 + b.x1) * 0.5f / ia.panel.pxW, v = (b.y0 + b.y1) * 0.5f / ia.panel.pxH;
+                V3 target = apply(Pose{ia.panel.pose.pos, ia.panel.pose.rot, 1}, V3{(u - 0.5f) * ia.panel.width, (0.5f - v) * ia.panel.height, 0});
+                r.aim = {from, lookRot(target - from), 1}; r.grip = r.aim;
+                if (t > 4.4 && !docBefore) docBefore = (size_t)loads;
+                if (t > 4.8 && t < 4.9) r.select = 1;
+                if (t > 5.4 && !autoDone) {
+                    steps[2].ok = panelClicks == 1 && (size_t)loads == docBefore + 1;    // the button loaded the next file
+                    autoDone = true; bool all = true;
+                    for (auto& s : steps) { std::fprintf(stderr, "mcxr autotest: %-36s %s\n", s.what, s.ok ? "PASS" : "FAIL"); all &= s.ok; }
+                    std::fprintf(stderr, "mcxr autotest: %s\n", all ? "PASS" : "FAIL");
+                }
             }
         };
     }
@@ -169,7 +225,7 @@ int main(int argc, char** argv) {
         }
     }
     hs.destroy();
-    if (autotest) return autoOk ? 0 : 3;
     glXMakeCurrent(dpy, None, nullptr); glXDestroyContext(dpy, ctx); XDestroyWindow(dpy, win); XCloseDisplay(dpy);
+    if (autotest) { for (auto& s : steps) if (!s.ok) return 3; }
     return 0;
 }
