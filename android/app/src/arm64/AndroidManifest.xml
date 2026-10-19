@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Headset build (Quest 3): head tracking is required (Meta store / VRC.Quest.Packaging); the x86 emulator build omits it. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-feature android:name="android.hardware.vr.headtracking" android:required="true" android:version="1" />
+</manifest>

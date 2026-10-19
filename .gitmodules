@@ -1,0 +1,3 @@
+[submodule "mobilecad"]
+	path = mobilecad
+	url = https://github.com/LucasCoraca/mobilecad.git

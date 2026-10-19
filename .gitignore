@@ -1,0 +1,12 @@
+build/
+*.apk
+*.aab
+*.ppm
+android/.gradle/
+android/app/build/
+android/local.properties
+android/app/.cxx/
+# MobileCAD engine runtime, staged per ABI by mobilecad/engine/package_runtime.py (~500 MB each)
+android/app/src/x86/
+android/app/src/arm64/assets/
+android/app/src/arm64/jniLibs/
