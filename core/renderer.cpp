@@ -44,18 +44,18 @@ static const char* kLineFs = R"(in vec3 vC; uniform float uGamma; uniform float 
 void main(){ if (uRound > 0.5 && length(gl_PointCoord - vec2(0.5)) > 0.5) discard; o = vec4(pow(vC, vec3(uGamma)),1.0); })";
 // panels: rounded corners (uSize = panel size in m, uRadius in m), optional dimming
 static const char* kTexVs = R"(
-layout(location=0) in vec3 aPos; layout(location=1) in vec2 aUv; uniform mat4 uMvp; out vec2 vUv;
-void main(){ vUv = aUv; gl_Position = uMvp * vec4(aPos,1.0); })";
+layout(location=0) in vec3 aPos; layout(location=1) in vec2 aUv; uniform mat4 uMvp; uniform vec4 uUv; out vec2 vUv; out vec2 vQ;
+void main(){ vQ = aUv; vUv = uUv.xy + aUv * uUv.zw; gl_Position = uMvp * vec4(aPos,1.0); })";
 static const char* kPanelMask = R"(
-uniform vec2 uSize; uniform float uRadius; uniform float uGamma; uniform float uDim; out vec4 o;
+in vec2 vQ; uniform vec2 uSize; uniform float uRadius; uniform float uGamma; uniform float uDim; uniform float uAlpha; out vec4 o;
 float mask(vec2 uv){ vec2 p = abs((uv - 0.5) * uSize) - (uSize * 0.5 - vec2(uRadius)); return length(max(p, 0.0)) - uRadius; }
-vec4 finish(vec4 c){ if (mask(vUv) > 0.0) discard; return vec4(pow(c.rgb * uDim, vec3(uGamma)), c.a); })";
+vec4 finish(vec4 c){ if (mask(vQ) > 0.0) discard; return vec4(pow(c.rgb * uDim, vec3(uGamma)), c.a); })";
 static const char* kTexFs = R"(in vec2 vUv; uniform sampler2D uTex;
 %MASK%
 void main(){ o = finish(texture(uTex, vUv)); })";
 static const char* kOesFs = R"(in vec2 vUv; uniform samplerExternalOES uTex;
 %MASK%
-void main(){ o = finish(vec4(texture(uTex, vUv).rgb, 1.0)); })";
+void main(){ vec4 c = texture(uTex, vUv); o = finish(uAlpha > 0.5 ? c : vec4(c.rgb, 1.0)); })";
 
 static std::string withMask(const char* fs) { std::string s = fs; s.replace(s.find("%MASK%"), 6, kPanelMask); return s; }
 
@@ -186,18 +186,45 @@ void Renderer::drawDots(const std::vector<float>& pts, float sizePx, const M4& v
     glBindVertexArray(0);
 }
 
-void Renderer::drawPanel(GLuint tex, bool external, const Pose& c, float w, float h, float radius, const M4& vp, float dim) {
+void Renderer::drawPanel(GLuint tex, bool external, const Pose& c, float w, float h, float radius, const M4& vp, float dim, const float* uv, bool alpha) {
     if (!tex || (external && !oesProg)) return;
     M4 m = fromPose(c); for (int k = 0; k < 3; ++k) { m.m[k] *= w; m.m[4 + k] *= h; }
     M4 mvp = mul(vp, m);
     GLuint prog = external ? oesProg : texProg; GLenum target = external ? GL_TEXTURE_EXTERNAL_OES : GL_TEXTURE_2D;
+    static const float whole[4] = {0, 0, 1, 1}; if (!uv) uv = whole;
     glUseProgram(prog); glUniformMatrix4fv(glGetUniformLocation(prog, "uMvp"), 1, GL_FALSE, mvp.m); glUniform1i(glGetUniformLocation(prog, "uTex"), 0);
     glUniform1f(glGetUniformLocation(prog, "uGamma"), gamma); glUniform2f(glGetUniformLocation(prog, "uSize"), w, h);
     glUniform1f(glGetUniformLocation(prog, "uRadius"), radius); glUniform1f(glGetUniformLocation(prog, "uDim"), dim);
+    glUniform4f(glGetUniformLocation(prog, "uUv"), uv[0], uv[1], uv[2], uv[3]); glUniform1f(glGetUniformLocation(prog, "uAlpha"), alpha ? 1.f : 0.f);
     glActiveTexture(GL_TEXTURE0); glBindTexture(target, tex);
-    glEnable(GL_BLEND); glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glEnable(GL_BLEND);
+    // an external image with alpha is a composited window surface: premultiplied
+    if (external && alpha) glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA); else glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     glBindVertexArray(quadVao); glDrawArrays(GL_TRIANGLES, 0, 6); glBindVertexArray(0);
     glDisable(GL_BLEND);
+}
+
+void Renderer::readAlpha(GLuint tex, bool external, int w, int h, std::vector<uint8_t>& out) {
+    if (!tex || (external && !oesProg)) return;
+    if (!maskFbo || maskW != w || maskH != h) {
+        if (maskFbo) { glDeleteFramebuffers(1, &maskFbo); glDeleteTextures(1, &maskTex); }
+        glGenTextures(1, &maskTex); glBindTexture(GL_TEXTURE_2D, maskTex);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+        glGenFramebuffers(1, &maskFbo); glBindFramebuffer(GL_FRAMEBUFFER, maskFbo);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, maskTex, 0);
+        maskW = w; maskH = h;
+    }
+    GLint prevFbo = 0, view[4]; glGetIntegerv(GL_FRAMEBUFFER_BINDING, &prevFbo); glGetIntegerv(GL_VIEWPORT, view);
+    glBindFramebuffer(GL_FRAMEBUFFER, maskFbo); glViewport(0, 0, w, h);
+    glClearColor(0, 0, 0, 0); glClear(GL_COLOR_BUFFER_BIT); glDisable(GL_DEPTH_TEST);
+    M4 ortho{}; ortho.m[0] = 2; ortho.m[5] = -2; ortho.m[10] = 1; ortho.m[15] = 1;      // quad -> whole target, row 0 = image top
+    float g = gamma; gamma = 1;
+    drawPanel(tex, external, Pose{V3{}, Q{}, 1}, 1, 1, 0, ortho, 1, nullptr, true);
+    gamma = g;
+    out.resize((size_t)w * h * 4); glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, out.data());
+    for (size_t i = 0; i < (size_t)w * h; ++i) out[i] = out[i * 4 + 3];
+    out.resize((size_t)w * h);
+    glBindFramebuffer(GL_FRAMEBUFFER, prevFbo); glViewport(view[0], view[1], view[2], view[3]); glEnable(GL_DEPTH_TEST);
 }
 
 GLuint Renderer::makeTexture(int w, int h, const void* rgba, GLuint reuse) {

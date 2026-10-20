@@ -35,6 +35,7 @@ import app.mobilecad.freecad.AppState
 import app.mobilecad.freecad.SelRef
 import app.mobilecad.ui.OS
 import app.mobilecad.ui.Shell
+import app.mobilecad.ui.XrLayout
 import kotlinx.coroutines.launch
 import org.qtproject.qt.android.QtHostAccess
 import java.io.File
@@ -43,8 +44,8 @@ import javax.microedition.khronos.opengles.GL10
 
 /**
  * MobileCAD XR: the whole MobileCAD app, in a headset. MobileCAD's interface (every workbench, feature dialogs, the
- * number pad, the feature tree) runs on a virtual display and is shown on a floating panel you use with the controller
- * ray as a touch screen. The model stands in the room and is MobileCAD's 3D view: the controller ray goes through that
+ * number pad, the feature tree) runs on a see-through virtual display in its XR layout, cut into surfaces around the
+ * user (tree left, bars ahead, docked panels right) that you use with the controller ray as a touch screen. The model stands in the room and is MobileCAD's 3D view: the controller ray goes through that
  * view's own touch handling (picking, every sketch tool, Draft points, drag arrows), and what the view draws (the sketch
  * being edited, preselection, Draft feedback, annotations) is drawn on the model in 3D. Your hands move, turn, scale it.
  *
@@ -61,6 +62,7 @@ class XrActivity : ComponentActivity() {
     private var lastDoc = ""
 
     private external fun nativeAttach()
+    private external fun nativeSetLayout(w: Int, h: Int, rects: FloatArray)
     private external fun nativeStartXr()
     private external fun nativeStop()
     private external fun nativeBeginScene(title: String)
@@ -86,6 +88,7 @@ class XrActivity : ComponentActivity() {
             text = "MobileCAD XR\nPut on your headset"
         })
         nativeAttach()
+        layoutPanel()
         nativeStartXr()
         syncScene()
     }
@@ -137,9 +140,16 @@ class XrActivity : ComponentActivity() {
         runOnUiThread {
             val evs = synchronized(rays) { raysPosted = false; rays.toList().also { rays.clear() } }
             val v = app.viewport ?: return@runOnUiThread
-            for (e in evs) v.xrPointer(e[0].toInt(), floatArrayOf(e[1], e[2], e[3]), floatArrayOf(e[4], e[5], e[6]), e[7])
+            for (e in evs) {
+                val a = e[0].toInt()
+                // with a menu or dialog open, a press on the model is a touch outside it (it closes, as on a touch screen)
+                if (a == 0) modal()?.let { w -> outsideTouch(w); swallow = true }
+                if (swallow) { if (a == 2) swallow = false; if (a <= 2) continue }
+                v.xrPointer(a, floatArrayOf(e[1], e[2], e[3]), floatArrayOf(e[4], e[5], e[6]), e[7])
+            }
         }
     }
+    private var swallow = false
     @Suppress("unused") fun onXrContextMenu() { runOnUiThread { app.viewport?.xrContextMenu() } }
 
     private var viewPosted = false
@@ -186,6 +196,14 @@ class XrActivity : ComponentActivity() {
     }
 
     // ---------------------------------------------------------------- the UI panel: MobileCAD on a virtual display
+    /** MobileCAD lays its interface out for XR (XrLayout): the virtual display's size and the parts the headset shows as
+     *  separate surfaces around the user - feature list, view area, bars, docked panels (pixels at 240 dpi). */
+    private fun layoutPanel() {
+        val k = 1.5f; val t = XrLayout.TREE * k; val st = XrLayout.STAGE * k; val sd = XrLayout.SIDE * k
+        val h = XrLayout.HEIGHT * k; val b = XrLayout.BARS * k
+        nativeSetLayout((t + st + sd).toInt(), h.toInt(), floatArrayOf(0f, 0f, t, h,  t, 0f, st, h - b,  t, h - b, st, b,  t + st, 0f, sd, h))
+    }
+
     /** Called on the GL thread with the panel's texture: MobileCAD's UI is rendered into it through a virtual display. */
     @Suppress("unused") fun createPanelSurface(tex: Int, w: Int, h: Int) {
         val st = SurfaceTexture(tex).apply { setDefaultBufferSize(w, h); setOnFrameAvailableListener { panelFrame = true } }
@@ -197,6 +215,9 @@ class XrActivity : ComponentActivity() {
             val vd = dm.createVirtualDisplay("MobileCAD XR panel", w, h, 240, surface, DisplayManager.VIRTUAL_DISPLAY_FLAG_OWN_CONTENT_ONLY)
             display = vd
             presentation = Presentation(this, vd.display).apply {
+                // see-through where MobileCAD draws nothing: the model in the room shows between the surfaces
+                window?.setBackgroundDrawable(android.graphics.drawable.ColorDrawable(Color.TRANSPARENT))
+                window?.setFormat(android.graphics.PixelFormat.TRANSLUCENT)
                 val view = ComposeView(context).apply {
                     setViewTreeLifecycleOwner(this@XrActivity); setViewTreeSavedStateRegistryOwner(this@XrActivity)
                     setViewTreeViewModelStoreOwner(this@XrActivity)
@@ -222,8 +243,10 @@ class XrActivity : ComponentActivity() {
     }
 
     /** Called on the GL thread every frame: latch the newest UI image into the panel texture. */
-    @Suppress("unused") fun updatePanelTexture() {
-        if (panelFrame) { panelFrame = false; try { panelTexture?.updateTexImage() } catch (e: Exception) { Log.w("mcxr", "panel", e) } }
+    @Suppress("unused") fun updatePanelTexture(): Boolean {
+        if (!panelFrame) return false
+        panelFrame = false; try { panelTexture?.updateTexImage() } catch (e: Exception) { Log.w("mcxr", "panel", e) }
+        return true
     }
 
     /** The controller ray on the panel, as touches (trigger) / mouse hover and wheel (pointing, thumbstick) on the UI. */
@@ -297,6 +320,17 @@ class XrActivity : ComponentActivity() {
         return ws.firstOrNull()
     }
 
+    /** The open menu / popup / dialog (a focusable window above MobileCAD's), if any. */
+    private fun modal(): View? = panelWindows().lastOrNull { w -> w !== presentation?.window?.decorView &&
+        (w.layoutParams as? WindowManager.LayoutParams)?.let { it.flags and WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE == 0 } == true }
+    private fun outsideTouch(w: View) {
+        val now = SystemClock.uptimeMillis()
+        for (a in intArrayOf(MotionEvent.ACTION_DOWN, MotionEvent.ACTION_UP)) {
+            val ev = MotionEvent.obtain(now, now, a, -10000f, -10000f, 0).apply { source = InputDevice.SOURCE_TOUCHSCREEN }
+            w.dispatchTouchEvent(ev); ev.recycle()
+        }
+    }
+
     // ---------------------------------------------------------------- no headset: touch preview of the XR scene
     private fun showPreview(reason: String) {
         val view = GLSurfaceView(this)
@@ -320,7 +354,7 @@ class XrActivity : ComponentActivity() {
         }
         val note = TextView(this).apply {
             setTextColor(Color.rgb(200, 208, 216)); textSize = 13f; setPadding(28, 18, 28, 18); setBackgroundColor(Color.argb(140, 0, 0, 0))
-            text = "No headset ($reason): preview of the XR scene. One finger is the controller (touch the panel to use it, the model or the space around it to pick, sketch and place points); two fingers look around."
+            text = "No headset ($reason): preview of the XR scene. One finger is the controller (touch the UI to use it, the model or the space around it to pick, sketch and place points); two fingers look around."
         }
         setContentView(FrameLayout(this).apply {
             addView(view)

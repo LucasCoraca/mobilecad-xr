@@ -2,6 +2,7 @@
 // a floor grid, controller rays, cursor dots and textured panels (the app's UI, the info card). The same code runs on
 // OpenGL ES 3 (headsets) and desktop GL 3.3 (simulator); on Android a panel can show an external (SurfaceTexture) image.
 #pragma once
+#include <cstdint>
 #include <vector>
 #include "gl.h"
 #include "scene.h"
@@ -23,7 +24,12 @@ public:
     /** Points (x y z r g b; the second vertex of each Lines pair is ignored) drawn as round dots of `sizePx` pixels. */
     void drawDots(const std::vector<float>& pts, float sizePx, const M4& viewProj);
     /** A textured rectangle centred on `center` (local X = width, local Y = height), corners rounded by `radius` (m). */
-    void drawPanel(GLuint tex, bool external, const Pose& center, float w, float h, float radius, const M4& viewProj, float dim = 1.f);
+    /** `uv`: the part of the image shown (x y w h, 0..1, y down), whole by default; `alpha`: the image's own transparency
+     *  (a window surface: premultiplied), else opaque. */
+    void drawPanel(GLuint tex, bool external, const Pose& center, float w, float h, float radius, const M4& viewProj, float dim = 1.f,
+                   const float* uv = nullptr, bool alpha = false);
+    /** The image's alpha at w x h (row 0 = top), for hit testing what is drawn on a see-through surface. */
+    void readAlpha(GLuint tex, bool external, int w, int h, std::vector<uint8_t>& out);
     GLuint makeTexture(int w, int h, const void* rgba, GLuint reuse = 0);
     /** Forget GL objects of a previous context (they are gone with it): the next upload starts afresh. */
     void contextLost() { uploaded = ~0u; uploadedScene = nullptr; buffers.clear(); arrays.clear(); }
@@ -34,6 +40,7 @@ private:
     GLuint meshProg = 0, lineProg = 0, texProg = 0, oesProg = 0, lineVao = 0, lineVbo = 0, quadVao = 0, quadVbo = 0;
     GLint uMvp = -1, uModel = -1, uColor = -1, uLit = -1, uEye = -1;
     unsigned uploaded = ~0u; const Scene* uploadedScene = nullptr;
+    GLuint maskFbo = 0, maskTex = 0; int maskW = 0, maskH = 0;
     std::vector<GLuint> buffers, arrays;                    // owned by the last upload
 };
 

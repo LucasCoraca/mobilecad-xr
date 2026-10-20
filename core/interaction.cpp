@@ -19,7 +19,8 @@ void Interaction::placeModel(const Pose& head) {
     float r = std::max(scene.radius(), 1e-3f);
     V3 f = forward(head); f.y = 0; f = len(f) > 1e-3f ? norm(f) : V3{0, 0, -1};
     V3 right = cross(f, V3{0, 1, 0});
-    V3 target = head.pos + f * 0.75f + right * 0.32f + V3{0, -0.2f, 0};        // to the right of the UI panel
+    // in front, inside the UI's surfaces around the viewer; with a single panel (to the left-front), to its right
+    V3 target = panel.sheets.empty() ? head.pos + f * 0.75f + right * 0.32f + V3{0, -0.2f, 0} : head.pos + f * 0.65f + V3{0, -0.22f, 0};
     float yaw = std::atan2(-f.x, -f.z);
     // FreeCAD is Z-up, OpenXR is Y-up: turn the model upright, then face the viewer
     Q upright = axisAngle({1, 0, 0}, -1.5707963f);
@@ -65,9 +66,10 @@ std::string Interaction::scaleText() const {
     return k < 1 ? "1:" + n : n + ":1";
 }
 
-Pose Interaction::badgePose() const {                                  // hangs under the panel's right-hand corner
-    Pose p{panel.pose.pos, panel.pose.rot, 1};
-    p.pos = apply(p, V3{panel.width / 2 - kBadgeW / 2, -panel.height / 2 - 0.018f - kBadgeH / 2, 0});
+Pose Interaction::badgePose() const {                                  // hangs under the panel's (badge sheet's) right-hand corner
+    Pose p{panel.pose.pos, panel.pose.rot, 1}; float w = panel.width, h = panel.height;
+    if (panel.badgeSheet >= 0 && panel.badgeSheet < (int)panel.sheets.size()) { const Sheet& s = panel.sheets[panel.badgeSheet]; p = sheetPose(s); w = s.w / s.pxPerM; h = s.h / s.pxPerM; }
+    p.pos = apply(p, V3{w / 2 - kBadgeW / 2, -h / 2 - 0.018f - kBadgeH / 2, 0});
     return p;
 }
 
@@ -75,6 +77,7 @@ V3 Interaction::badgeButton() const { return apply(badgePose(), V3{kBadgeW / 2 -
 
 void Interaction::placePanel(const Pose& head) {
     V3 f = forward(head); f.y = 0; f = len(f) > 1e-3f ? norm(f) : V3{0, 0, -1};
+    if (!panel.sheets.empty()) { panel.pose = {head.pos, facing(head.pos, head.pos + f), 1}; return; }   // the sheets surround the viewer
     V3 right = cross(f, V3{0, 1, 0});
     V3 c = head.pos + f * 0.95f - right * 0.42f + V3{0, -0.12f, 0};
     panel.pose = {c, facing(head.pos, c), 1};
@@ -94,11 +97,38 @@ static bool rectRay(const Pose& aim, const Pose& rect, float w, float h, float* 
     return true;
 }
 
-bool Interaction::panelRay(const Pose& aim, float* t, float* px, float* py, bool clamp) const {
+bool Panel::solid(float px, float py) const {
+    if (mask.empty()) return true;
+    int cx = (int)(px / maskScale), cy = (int)(py / maskScale);
+    for (int y = cy - 1; y <= cy + 1; ++y) for (int x = cx - 1; x <= cx + 1; ++x)
+        if (x >= 0 && y >= 0 && x < maskW && y < maskH && mask[(size_t)y * maskW + x] > 24) return true;
+    return false;
+}
+
+bool Interaction::panelRay(const Pose& aim, float* t, float* px, float* py, bool clamp, int* sheet) const {
     if (!panel.visible) return false;
-    float u, v; if (!rectRay(aim, panel.pose, panel.width, panel.height, t, &u, &v, clamp)) return false;
-    *px = u * panel.pxW; *py = v * panel.pxH;
-    return true;
+    if (panel.sheets.empty()) {
+        float u, v; if (!rectRay(aim, panel.pose, panel.width, panel.height, t, &u, &v, clamp)) return false;
+        *px = u * panel.pxW; *py = v * panel.pxH;
+        return true;
+    }
+    // a drag stays on the sheet it started on; otherwise the nearest sheet with something drawn where the ray meets it
+    bool hit = false;
+    for (int i = 0; i < (int)panel.sheets.size(); ++i) {
+        if (clamp && i != pointerSheet) continue;
+        const Sheet& s = panel.sheets[i]; float tt, u, v;
+        if (!rectRay(aim, sheetPose(s), s.w / s.pxPerM, s.h / s.pxPerM, &tt, &u, &v, clamp) || (hit && tt >= *t)) continue;
+        float x = s.x + u * s.w, y = s.y + v * s.h;
+        if (!clamp && !panel.solid(x, y)) continue;
+        hit = true; *t = tt; *px = x; *py = y; if (sheet) *sheet = i;
+    }
+    return hit;
+}
+
+void Interaction::updateMask(Renderer& r) {
+    if (!panel.seeThrough || !panel.tex) return;
+    panel.maskW = panel.pxW / Panel::maskScale; panel.maskH = panel.pxH / Panel::maskScale;
+    r.readAlpha(panel.tex, panel.external, panel.maskW, panel.maskH, panel.mask);
 }
 
 bool Interaction::badgeRay(const Pose& aim, float* t, float* u) const {
@@ -117,7 +147,9 @@ Interaction::Target Interaction::aimAt(const Pose& aim) const {
         if (h.mesh >= 0) { out.t = h.t * model.scale; out.elem = {h.mesh, e.mesh >= 0 ? 'E' : 'F', h.face}; out.point = h.point; }
     }
     float t, px, py;
-    if (panelRay(aim, &t, &px, &py, false) && t < out.t) { out = {}; out.panel = true; out.t = t; out.px = px; out.py = py; }
+    int sh = -1;
+    // the UI's surfaces are drawn over the model, so what is on them wins wherever the ray meets them
+    if (panelRay(aim, &t, &px, &py, false, &sh) && (t < out.t || panel.seeThrough)) { out = {}; out.panel = true; out.t = t; out.px = px; out.py = py; out.sheet = sh; }
     if (badgeRay(aim, &t, &px) && t < out.t) { out = {}; out.badge = true; out.t = t; }
     return out;
 }
@@ -164,11 +196,11 @@ void Interaction::update(const HandInput hands[2], float dt) {
     if (pointerHand >= 0) {
         int i = pointerHand; float t, px, py;
         if (!trig[i] || !hands[i].active) { if (onPanelPointer) onPanelPointer(PanelUp, hoverX, hoverY); pointerHand = -1; }
-        else if (panelRay(hands[i].aim, &t, &px, &py, true)) { hoverX = px; hoverY = py; if (onPanelPointer) onPanelPointer(PanelMove, px, py); }
+        else if (panelRay(hands[i].aim, &t, &px, &py, true, &pointerSheet)) { hoverX = px; hoverY = py; if (onPanelPointer) onPanelPointer(PanelMove, px, py); }
     }
     if (pointerHand < 0) {
         for (int i : {1, 0}) if (trig[i] && !prevTrig[i] && target[i].panel && !grab[i].on) {
-            pointerHand = i; hoverX = target[i].px; hoverY = target[i].py;
+            pointerHand = i; hoverX = target[i].px; hoverY = target[i].py; pointerSheet = target[i].sheet;
             if (onPanelPointer) onPanelPointer(PanelDown, hoverX, hoverY);
             break;
         }
@@ -303,7 +335,15 @@ void Interaction::render(Renderer& r, const M4& vp, V3 eye) {
         r.drawPanel(it->second.first, false, Pose{p + x * (w * 0.5f + 0.012f * dist) + y * (h * 0.7f), fromBasis(x, y, z), 1}, w, h, h * 0.25f, vp);
     }
     glEnable(GL_DEPTH_TEST);
-    if (panel.visible && panel.tex) {
+    if (panel.visible && panel.tex && !panel.sheets.empty()) {
+        // the UI's surfaces: drawn over the model (as windows over a 3D view), see-through where the UI draws nothing
+        glDisable(GL_DEPTH_TEST);
+        for (const Sheet& s : panel.sheets) {
+            float uv[4] = {s.x / panel.pxW, s.y / panel.pxH, s.w / panel.pxW, s.h / panel.pxH};
+            r.drawPanel(panel.tex, panel.external, sheetPose(s), s.w / s.pxPerM, s.h / s.pxPerM, 0, vp, 1, uv, panel.seeThrough);
+        }
+        glEnable(GL_DEPTH_TEST);
+    } else if (panel.visible && panel.tex) {
         // a dark back plate with a slim border, then the UI itself
         static GLuint plate = 0;
         if (!plate) { const unsigned char px[4] = {14, 17, 21, 255}; plate = r.makeTexture(1, 1, px); }

@@ -9,6 +9,7 @@
 #include <jni.h>
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cstdarg>
 #include <cstring>
 #include <functional>
@@ -33,8 +34,8 @@ Interaction gIa; Renderer gRenderer;
 std::mutex gQueueLock; std::vector<std::function<void()>> gQueue;   // scene / selection changes, applied on the GL thread
 std::thread gXrThread; std::atomic<bool> gStop{false};
 std::atomic<bool> gPlaceModel{true}, gPlacePanel{true};
-constexpr int kPanelW = 1200, kPanelH = 1000;                       // the UI's virtual display, in pixels (the model is
-                                                                    // in the room, so no room is needed for a 3D view)
+std::atomic<int> gPanelW{2220}, gPanelH{1200};                      // the UI's virtual display, in pixels (set by the app)
+std::mutex gSheetLock; std::vector<float> gSheetRects;               // its parts: x y w h each (tree, stage, bars, side)
 
 JNIEnv* env() { JNIEnv* e = nullptr; gVm->GetEnv((void**)&e, JNI_VERSION_1_6); return e; }
 jmethodID method(JNIEnv* e, const char* name, const char* sig) {
@@ -46,17 +47,47 @@ void drainQueue() {
     for (auto& f : q) f();
 }
 
+/** The UI around the viewer, as on a desk with three monitors: the stage (MobileCAD's view area: banners, menus, dialogs,
+ *  drawings) straight ahead a metre away behind the model, the tool bars hinged under it and tilted up towards the hands
+ *  like a keyboard, the feature tree on the left and the feature dialogs / task panels on the right, turned towards the
+ *  viewer. Everything is see-through where MobileCAD draws nothing. Local frame: the viewer's eyes, -Z ahead. */
+void arrangeSheets(const std::vector<float>& r) {
+    gIa.panel.sheets.clear();
+    if (r.size() < 16) return;
+    const float ppm = 1600, D = 1.0f, wing = 0.62f, tilt = 0.55f;
+    auto sheet = [&](int i) { Sheet s; s.x = r[4 * i]; s.y = r[4 * i + 1]; s.w = r[4 * i + 2]; s.h = r[4 * i + 3]; s.pxPerM = ppm; return s; };
+    Sheet tree = sheet(0), stage = sheet(1), bars = sheet(2), side = sheet(3);
+    float ws = stage.w / ppm, hs = stage.h / ppm, top = 0.16f;
+    stage.local = {V3{0, top - hs / 2, -D}, Q{}, 1};
+    V3 hinge{0, top - hs, -D};
+    Q tq = axisAngle({1, 0, 0}, -tilt);
+    bars.local = {hinge + rotate(tq, V3{0, -bars.h / ppm / 2, 0}), tq, 1};
+    Q lq = axisAngle({0, 1, 0}, wing), rq = axisAngle({0, 1, 0}, -wing);
+    tree.local = {V3{-ws / 2, 0, -D} + rotate(lq, V3{-tree.w / ppm / 2, top - tree.h / ppm / 2, 0}), lq, 1};
+    side.local = {V3{ws / 2, 0, -D} + rotate(rq, V3{side.w / ppm / 2, top - side.h / ppm / 2, 0}), rq, 1};
+    gIa.panel.sheets = {tree, stage, bars, side};
+    gIa.panel.seeThrough = true; gIa.panel.badgeSheet = 2;           // the scale badge hangs under the bars
+}
+
 /** On the GL thread: the UI panel's texture (Java wraps it in a SurfaceTexture and renders MobileCAD's UI into it). */
 void createPanel() {
+    int pw = gPanelW, ph = gPanelH;
+    { std::lock_guard<std::mutex> l(gSheetLock); arrangeSheets(gSheetRects); }
     GLuint tex = 0; glGenTextures(1, &tex); glBindTexture(GL_TEXTURE_EXTERNAL_OES, tex);
     glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_MIN_FILTER, GL_LINEAR); glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE); glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    gIa.panel.tex = tex; gIa.panel.external = true; gIa.panel.pxW = kPanelW; gIa.panel.pxH = kPanelH;
-    gIa.panel.width = kPanelW / 1600.f; gIa.panel.height = gIa.panel.width * kPanelH / kPanelW;   // 1600 px per metre
+    gIa.panel.tex = tex; gIa.panel.external = true; gIa.panel.pxW = pw; gIa.panel.pxH = ph;
+    gIa.panel.width = pw / 1600.f; gIa.panel.height = gIa.panel.width * ph / pw;   // 1600 px per metre
     gIa.panel.visible = true;
-    JNIEnv* e = env(); e->CallVoidMethod(gActivity, method(e, "createPanelSurface", "(III)V"), (jint)tex, kPanelW, kPanelH);
+    JNIEnv* e = env(); e->CallVoidMethod(gActivity, method(e, "createPanelSurface", "(III)V"), (jint)tex, pw, ph);
 }
-void updatePanel() { JNIEnv* e = env(); e->CallVoidMethod(gActivity, method(e, "updatePanelTexture", "()V")); }
+/** Latches the newest UI image; a few times a second, reads back where it is see-through (for the rays). */
+void updatePanel() {
+    static double lastMask = 0; static bool changed = false;
+    JNIEnv* e = env(); changed |= e->CallBooleanMethod(gActivity, method(e, "updatePanelTexture", "()Z"));
+    double now = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+    if (changed && now - lastMask > 0.1) { gIa.updateMask(gRenderer); changed = false; lastMask = now; }
+}
 
 void hookCallbacks() {
     gIa.hostSelection = true;
@@ -147,6 +178,12 @@ JNIEXPORT jint JNI_OnLoad(JavaVM* vm, void*) { gVm = vm; return JNI_VERSION_1_6;
 JNIEXPORT void JNICALL Java_app_mobilecad_xr_XrActivity_nativeAttach(JNIEnv* e, jobject self) {
     if (gActivity) e->DeleteGlobalRef(gActivity);
     gActivity = e->NewGlobalRef(self);
+}
+/** The UI's virtual display size and its parts (x y w h px: tree, stage, bars, side); before the XR start. */
+JNIEXPORT void JNICALL Java_app_mobilecad_xr_XrActivity_nativeSetLayout(JNIEnv* e, jobject, jint w, jint h, jfloatArray rects) {
+    gPanelW = w; gPanelH = h;
+    std::vector<float> r(e->GetArrayLength(rects)); e->GetFloatArrayRegion(rects, 0, (jsize)r.size(), r.data());
+    std::lock_guard<std::mutex> l(gSheetLock); gSheetRects = r;
 }
 JNIEXPORT void JNICALL Java_app_mobilecad_xr_XrActivity_nativeStartXr(JNIEnv*, jobject) {
     if (gXrThread.joinable()) return;

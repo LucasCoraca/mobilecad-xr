@@ -34,13 +34,23 @@ struct HandInput {
     bool context = false;       // B / Y button: the view's context menu
 };
 
-/** A flat UI surface in the world (the app's interface). Local +Z faces the user, X right, Y up; size in metres. */
+/** One part of the UI image shown as its own flat surface: the pixel rectangle (x y w h) at a pose relative to the panel,
+ *  `pxPerM` pixels per metre. */
+struct Sheet { float x = 0, y = 0, w = 0, h = 0; Pose local; float pxPerM = 1600; };
+
+/** The app's interface in the world. Without `sheets` it is one flat surface: local +Z faces the user, X right, Y up, size
+ *  in metres. With `sheets` (MobileCAD XR) the image is cut into surfaces arranged around the user, see-through where the
+ *  UI draws nothing (`seeThrough`: the image's alpha, read back into `mask`, decides what the ray hits). */
 struct Panel {
     bool visible = false;
-    Pose pose;                  // centre
+    Pose pose;                  // centre (with sheets: the place the user stands, facing the UI)
     float width = 1.0f, height = 0.625f;
     int pxW = 1600, pxH = 1000; // texture / touch coordinate space
     GLuint tex = 0; bool external = false;
+    std::vector<Sheet> sheets; bool seeThrough = false; int badgeSheet = -1;   // the scale badge hangs under this sheet
+    std::vector<uint8_t> mask; int maskW = 0, maskH = 0;     // alpha at 1/maskScale of the image
+    static constexpr int maskScale = 8;
+    bool solid(float px, float py) const;                    // something drawn at (or right next to) this pixel
 };
 
 enum PanelAction { PanelDown = 0, PanelMove = 1, PanelUp = 2, PanelHover = 3, PanelLeave = 4, PanelScroll = 5 };
@@ -85,6 +95,9 @@ public:
     void placePanel(const Pose& head);
     void update(const HandInput hands[2], float dt);
     void render(Renderer& r, const M4& viewProj, V3 eye);
+    /** Reads the panel image's alpha for hit testing (call when the image changed, at most a few times a second). */
+    void updateMask(Renderer& r);
+    Pose sheetPose(const Sheet& s) const { return compose(Pose{panel.pose.pos, panel.pose.rot, 1}, s.local); }
 
 private:
     struct Grab { bool on = false; Pose handStart, objStart; float t = 0; V3 aimStart; bool panel = false; };
@@ -104,11 +117,12 @@ private:
     GLuint badgeTex = 0; std::string badgeDrawn;
     Pose badgePose() const;
     float lowestY() const;
-    struct Target { bool panel = false, badge = false; float t = 1e30f; float px = 0, py = 0; ElemRef elem; V3 point; };
+    struct Target { bool panel = false, badge = false; float t = 1e30f; float px = 0, py = 0; int sheet = -1; ElemRef elem; V3 point; };
     Target target[2];
     HandInput last[2];
     Target aimAt(const Pose& aim) const;
-    bool panelRay(const Pose& aim, float* t, float* px, float* py, bool clamp) const;
+    bool panelRay(const Pose& aim, float* t, float* px, float* py, bool clamp, int* sheet = nullptr) const;
+    int pointerSheet = -1;                    // the sheet a touch started on (drags stay on its plane)
     bool badgeRay(const Pose& aim, float* t, float* u) const;
 };
 
