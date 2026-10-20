@@ -80,6 +80,7 @@ bool Headset::create(const PlatformInit& p, const char* appName, std::string* er
     XrReferenceSpaceType type = XR_REFERENCE_SPACE_TYPE_LOCAL;
     for (auto s : spaces) if (s == XR_REFERENCE_SPACE_TYPE_STAGE) type = XR_REFERENCE_SPACE_TYPE_STAGE;
     XrReferenceSpaceCreateInfo rs{XR_TYPE_REFERENCE_SPACE_CREATE_INFO}; rs.poseInReferenceSpace.orientation.w = 1;
+    stage = type == XR_REFERENCE_SPACE_TYPE_STAGE;
     rs.referenceSpaceType = type; if (XR_FAILED(xrCreateReferenceSpace(session, &rs, &appSpace))) return fail("No tracking space");
     rs.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_VIEW; xrCreateReferenceSpace(session, &rs, &viewSpace);
     if (!makeSwapchains()) return fail("Could not create the eye images");
@@ -250,6 +251,7 @@ bool Headset::frame(Interaction& ia, Renderer& r) {
         HandInput hin[2]; readHands(fs.predictedDisplayTime, hin);
         if (!firstTime) firstTime = fs.predictedDisplayTime;
         if (inputOverride) inputOverride(hin, head, (fs.predictedDisplayTime - firstTime) * 1e-9);
+        ia.floorY = stage ? 0.f : -1.5f;                                 // local space: origin at the head, floor ~1.5 m below
         ia.update(hin, dt);
 
         XrViewLocateInfo li{XR_TYPE_VIEW_LOCATE_INFO}; li.viewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;

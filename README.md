@@ -23,6 +23,17 @@ tools act on.
 | Both hands | | Scale and turn the model between your hands |
 | Thumbstick | Scroll | Up/down scales, left/right turns |
 | A / X (menu) | Bring the panel and the model back in front of you | |
+| Scale badge (under the panel) | **TRUE SIZE**: the model at its real size, 1 mm = 1 mm · **FIT VIEW**: back to the scaled view | |
+
+### True size
+
+The badge under the panel always shows the model's scale (`SCALE 1:4.2`, `16:1`). **TRUE SIZE** switches to 1:1:
+a small part stays where it is (a 25 mm bit really is 25 mm in your hand), a part bigger than arm's reach is stood on
+the floor in front of you so you can walk around it (a building at full size). In true size the scaling gestures only
+move and turn the model, so the scale can't drift; **FIT VIEW** puts the model back where and how big it was. Free
+scaling with both hands also snaps to 1:1 as you pass it.
+
+![The BIM example at true size, standing on the floor](docs/true-size.png)
 
 A typical flow: point at a face and click it, then on the panel tap **Sketch** → draw on that face in the panel's
 view → **Pad** → type the length on the number pad → the solid grows in front of you. FreeCAD's example projects ship
@@ -50,7 +61,7 @@ desktop build of MobileCAD XR (`desktop/`) runs the **same XR core** as the Ques
 
 ```sh
 sim/run.sh          # then open http://localhost:6080/vnc.html and press Connect
-sim/run.sh --test   # automated: scripted controller picks on the model, grabs and moves it, clicks a panel button
+sim/run.sh --test   # automated: scripted controller picks on the model, grabs and moves it, clicks a panel button, switches true size on and off
 ```
 
 In the browser, click into the **Monado!** panel on the right, then:

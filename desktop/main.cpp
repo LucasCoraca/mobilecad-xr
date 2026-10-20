@@ -3,7 +3,7 @@
 // mirrors the left eye into a window. Instead of MobileCAD's Android UI (which only exists on Android) it shows a small
 // stand-in panel with real buttons, so pointing at / clicking the UI panel can be tested here too.
 //
-//   mobilecad-xr-desktop [--autotest] [--screenshot out.ppm --frames N] scene.mcxr|dir ...
+//   mobilecad-xr-desktop [--autotest] [--true-size] [--screenshot out.ppm --frames N] scene.mcxr|dir ...
 #include <dirent.h>
 #include <algorithm>
 #include <chrono>
@@ -13,36 +13,13 @@
 #include <string>
 #include <thread>
 #include <vector>
-#include "font8x16.h"
+#include "../core/canvas.h"
 #include "../core/xr_session.h"
 
 using namespace mcxr;
 
 typedef GLXContext (*CreateContextAttribs)(Display*, GLXFBConfig, GLXContext, Bool, const int*);
 
-// ---- a tiny software canvas for the stand-in panel
-struct Canvas {
-    int w, h; std::vector<uint8_t> px;
-    Canvas(int w_, int h_) : w(w_), h(h_), px(w_ * h_ * 4, 0) {}
-    void rect(int x0, int y0, int x1, int y1, uint8_t r, uint8_t g, uint8_t b, int radius = 0) {
-        for (int y = std::max(0, y0); y < std::min(h, y1); ++y) for (int x = std::max(0, x0); x < std::min(w, x1); ++x) {
-            int dx = std::max({0, x0 + radius - x, x - (x1 - 1 - radius)}), dy = std::max({0, y0 + radius - y, y - (y1 - 1 - radius)});
-            if (dx * dx + dy * dy > radius * radius) continue;
-            uint8_t* p = &px[(y * w + x) * 4]; p[0] = r; p[1] = g; p[2] = b; p[3] = 255;
-        }
-    }
-    void text(int x0, int y0, const std::string& s, int scale, uint8_t r, uint8_t g, uint8_t b) {
-        for (char c : s) {
-            if (c < 32 || c > 126) c = '?';
-            for (int gy = 0; gy < 16; ++gy) for (int gx = 0; gx < 8; ++gx) if (kFont8x16[c - 32][gy] & (0x80 >> gx))
-                for (int sy = 0; sy < scale; ++sy) for (int sx = 0; sx < scale; ++sx) {
-                    int x = x0 + gx * scale + sx, y = y0 + gy * scale + sy; if (x < 0 || y < 0 || x >= w || y >= h) continue;
-                    uint8_t* p = &px[(y * w + x) * 4]; p[0] = r; p[1] = g; p[2] = b; p[3] = 255;
-                }
-            x0 += 8 * scale;
-        }
-    }
-};
 struct Button { const char* label; int x0, y0, x1, y1; };
 static const Button kButtons[] = {{"Next file", 80, 560, 760, 720}, {"Clear selection", 840, 560, 1520, 720}, {"Recenter", 80, 780, 760, 940}};
 
@@ -66,12 +43,13 @@ static Q lookRot(V3 d) {
 }
 
 int main(int argc, char** argv) {
-    std::vector<std::string> files; const char* shot = nullptr; int shotFrames = 120; bool autotest = false;
+    std::vector<std::string> files; const char* shot = nullptr; int shotFrames = 120; bool autotest = false, startTrue = false;
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
         if (a == "--screenshot" && i + 1 < argc) shot = argv[++i];
         else if (a == "--frames" && i + 1 < argc) shotFrames = std::atoi(argv[++i]);
         else if (a == "--autotest") autotest = true;
+        else if (a == "--true-size") startTrue = true;
         else if (DIR* d = opendir(a.c_str())) {
             while (dirent* e = readdir(d)) { std::string n = e->d_name; if (n.size() > 5 && n.substr(n.size() - 5) == ".mcxr") files.push_back(a + "/" + n); }
             closedir(d);
@@ -165,9 +143,11 @@ int main(int argc, char** argv) {
 
     // --autotest: a scripted right hand, checked through the same callbacks a user triggers (the runtime still drives the
     // session and the rendering): 1) click the model = pick  2) grab and carry it 25 cm  3) click the panel's "Next file"
+    // 4) click the scale badge: true size (1 mm = 1 mm)  5) click it again: back to the fitted view
     struct Step { const char* what; bool ok = false; };
-    std::vector<Step> steps{{"pick a face/edge on the model"}, {"grab + move the model 25 cm"}, {"click the panel's Next file button"}};
-    V3 movedFrom{}; bool movedSet = false, frozen = false, autoDone = false; Pose frozenAim; size_t docBefore = 0;
+    std::vector<Step> steps{{"pick a face/edge on the model"}, {"grab + move the model 25 cm"}, {"click the panel's Next file button"},
+                            {"scale badge: true size 1:1"}, {"scale badge: back to fit view"}};
+    float fitScale = 0; V3 movedFrom{}; bool movedSet = false, frozen = false, autoDone = false; Pose frozenAim; size_t docBefore = 0;
     if (autotest) {
         hs.inputOverride = [&](HandInput h[2], const Pose& head, double t) {
             if (ia.scene.empty() || t < 1.0) return;
@@ -185,6 +165,22 @@ int main(int argc, char** argv) {
                 }
                 if (t > 4.0 && !steps[1].ok) { float m = ia.model.pos.x - movedFrom.x; steps[1].ok = m > 0.2f && m < 0.3f; std::fprintf(stderr, "mcxr autotest: model moved %.3f m\n", m); }
                 if (t > 1.7 && !steps[0].ok) steps[0].ok = !ia.selected.empty();
+            } else if (t > 5.5) {
+                // the scale badge under the panel: click it twice
+                r.aim = {from, lookRot(ia.badgeButton() - from), 1}; r.grip = r.aim;
+                if (t > 5.6 && !fitScale) fitScale = ia.model.scale;
+                if ((t > 5.9 && t < 6.0) || (t > 6.6 && t < 6.7)) r.select = 1;
+                if (t > 6.3 && !steps[3].ok) {
+                    steps[3].ok = ia.trueScale && std::fabs(ia.model.scale - 0.001f) < 1e-7f && ia.scaleText() == "1:1";
+                    std::fprintf(stderr, "mcxr autotest: true size, scale %s\n", ia.scaleText().c_str());
+                }
+                if (t > 7.0 && !autoDone) {
+                    steps[4].ok = !ia.trueScale && ia.model.scale == fitScale;
+                    std::fprintf(stderr, "mcxr autotest: fit view, scale %s\n", ia.scaleText().c_str());
+                    autoDone = true; bool all = true;
+                    for (auto& s : steps) { std::fprintf(stderr, "mcxr autotest: %-36s %s\n", s.what, s.ok ? "PASS" : "FAIL"); all &= s.ok; }
+                    std::fprintf(stderr, "mcxr autotest: %s\n", all ? "PASS" : "FAIL");
+                }
             } else {
                 // aim at the centre of "Next file" on the panel, then click
                 const Button& b = kButtons[0];
@@ -193,12 +189,7 @@ int main(int argc, char** argv) {
                 r.aim = {from, lookRot(target - from), 1}; r.grip = r.aim;
                 if (t > 4.4 && !docBefore) docBefore = (size_t)loads;
                 if (t > 4.8 && t < 4.9) r.select = 1;
-                if (t > 5.4 && !autoDone) {
-                    steps[2].ok = panelClicks == 1 && (size_t)loads == docBefore + 1;    // the button loaded the next file
-                    autoDone = true; bool all = true;
-                    for (auto& s : steps) { std::fprintf(stderr, "mcxr autotest: %-36s %s\n", s.what, s.ok ? "PASS" : "FAIL"); all &= s.ok; }
-                    std::fprintf(stderr, "mcxr autotest: %s\n", all ? "PASS" : "FAIL");
-                }
+                if (t > 5.4) steps[2].ok = panelClicks == 1 && (size_t)loads == docBefore + 1;    // the button loaded the next file
             }
         };
     }
@@ -212,6 +203,7 @@ int main(int argc, char** argv) {
         hs.pollEvents(&quit);
         if (!hs.running()) { std::this_thread::sleep_for(std::chrono::milliseconds(20)); continue; }
         if (hs.frame(ia, renderer)) ++rendered;
+        if (startTrue && rendered == 2) ia.setTrueScale(true);           // after placement and a first render (viewer known)
         if (hs.mirrorTex) {                                             // mirror the left eye, keeping its aspect
             GLuint fbo; glGenFramebuffers(1, &fbo); glBindFramebuffer(GL_READ_FRAMEBUFFER, fbo);
             glFramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, hs.mirrorTex, 0);

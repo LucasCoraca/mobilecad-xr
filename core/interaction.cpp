@@ -1,10 +1,14 @@
 #include "interaction.h"
 #include <algorithm>
+#include <cstdio>
+#include "canvas.h"
 
 namespace mcxr {
 
 static V3 forward(const Pose& p) { return rotate(p.rot, V3{0, 0, -1}); }
 static Pose unscaled(const Pose& p) { return Pose{p.pos, p.rot, 1}; }
+static const float kTrueScale = 0.001f;              // scene mm -> world m
+static const float kBadgeW = 0.42f, kBadgeH = 0.06f; static const int kBadgePx = 2000;   // badge size (m), pixels per metre
 static Q facing(V3 from, V3 to) {                      // yaw-only rotation whose +Z points from `to` back to `from`
     V3 d = from - to; d.y = 0; if (len(d) < 1e-4f) d = {0, 0, 1};
     d = norm(d); return axisAngle({0, 1, 0}, std::atan2(d.x, d.z));
@@ -23,7 +27,51 @@ void Interaction::placeModel(const Pose& head) {
     model.pos = target - apply(model, scene.center());
     hover[0] = hover[1] = {};
     if (!hostSelection) selected.clear();
+    trueScale = false; fitSaved = false;
 }
+
+float Interaction::lowestY() const {
+    float low = 1e30f;
+    for (const Mesh& m : scene.meshes) for (size_t i = 0; i + 2 < m.tris.size(); i += 7)
+        low = std::min(low, apply(model, V3{m.tris[i], m.tris[i + 1], m.tris[i + 2]}).y);
+    return low;
+}
+
+void Interaction::setTrueScale(bool on) {
+    if (scene.empty() || on == trueScale) return;
+    trueScale = on;
+    if (!on) { if (fitSaved) model = fitPose; fitSaved = false; return; }
+    fitPose = model; fitSaved = true;
+    V3 c = apply(model, scene.center());                              // scale about the model's centre
+    model.pos = c + (model.pos - c) * (kTrueScale / model.scale); model.scale = kTrueScale;
+    float r = scene.radius() * kTrueScale;
+    if (r > 0.45f) {
+        // bigger than arm's reach: stand it on the floor, far enough in front of the viewer to walk around it
+        V3 d = c - viewer; d.y = 0; d = len(d) > 1e-3f ? norm(d) : V3{0, 0, -1};
+        V3 nc = viewer + d * (r + 0.4f); nc.y = c.y;
+        model.pos = model.pos + (nc - c);
+        model.pos.y += floorY - lowestY();
+    } else {
+        float low = lowestY(); if (low < floorY) model.pos.y += floorY - low;    // never below the floor
+    }
+}
+
+std::string Interaction::scaleText() const {
+    float k = model.scale / kTrueScale; char b[32];
+    if (std::fabs(k - 1) < 0.005f) return "1:1";
+    float v = k < 1 ? 1 / k : k;
+    std::snprintf(b, sizeof b, v < 9.95f ? "%.1f" : "%.0f", v);
+    std::string n = b; if (n.size() > 2 && n.compare(n.size() - 2, 2, ".0") == 0) n.resize(n.size() - 2);
+    return k < 1 ? "1:" + n : n + ":1";
+}
+
+Pose Interaction::badgePose() const {                                  // hangs under the panel's right-hand corner
+    Pose p{panel.pose.pos, panel.pose.rot, 1};
+    p.pos = apply(p, V3{panel.width / 2 - kBadgeW / 2, -panel.height / 2 - 0.018f - kBadgeH / 2, 0});
+    return p;
+}
+
+V3 Interaction::badgeButton() const { return apply(badgePose(), V3{kBadgeW / 2 - 0.078f, 0, 0}); }
 
 void Interaction::placePanel(const Pose& head) {
     V3 f = forward(head); f.y = 0; f = len(f) > 1e-3f ? norm(f) : V3{0, 0, -1};
@@ -34,17 +82,27 @@ void Interaction::placePanel(const Pose& head) {
     panel.pose.rot = qnorm(panel.pose.rot * axisAngle({1, 0, 0}, -0.12f));
 }
 
+/** Ray against a w x h rectangle centred on `rect` (local X right, Y up): distance and 0..1 coordinates (v down). */
+static bool rectRay(const Pose& aim, const Pose& rect, float w, float h, float* t, float* u, float* v, bool clamp) {
+    V3 n = rotate(rect.rot, {0, 0, 1}), d = forward(aim);
+    float den = dot(d, n); if (std::fabs(den) < 1e-5f) return false;
+    float tt = dot(rect.pos - aim.pos, n) / den; if (tt <= 0) return false;
+    V3 local = rotate(conj(rect.rot), aim.pos + d * tt - rect.pos);
+    float uu = local.x / w + 0.5f, vv = 0.5f - local.y / h;
+    if (!clamp && (uu < 0 || uu > 1 || vv < 0 || vv > 1)) return false;
+    *t = tt; *u = std::max(0.f, std::min(1.f, uu)); *v = std::max(0.f, std::min(1.f, vv));
+    return true;
+}
+
 bool Interaction::panelRay(const Pose& aim, float* t, float* px, float* py, bool clamp) const {
     if (!panel.visible) return false;
-    V3 n = rotate(panel.pose.rot, {0, 0, 1}), d = forward(aim);
-    float den = dot(d, n); if (std::fabs(den) < 1e-5f) return false;
-    float tt = dot(panel.pose.pos - aim.pos, n) / den; if (tt <= 0) return false;
-    V3 local = rotate(conj(panel.pose.rot), aim.pos + d * tt - panel.pose.pos);
-    float u = local.x / panel.width + 0.5f, v = 0.5f - local.y / panel.height;
-    if (!clamp && (u < 0 || u > 1 || v < 0 || v > 1)) return false;
-    u = std::max(0.f, std::min(1.f, u)); v = std::max(0.f, std::min(1.f, v));
-    *t = tt; *px = u * panel.pxW; *py = v * panel.pxH;
+    float u, v; if (!rectRay(aim, panel.pose, panel.width, panel.height, t, &u, &v, clamp)) return false;
+    *px = u * panel.pxW; *py = v * panel.pxH;
     return true;
+}
+
+bool Interaction::badgeRay(const Pose& aim, float* t, float* u) const {
+    float v; return panel.visible && !scene.empty() && rectRay(aim, badgePose(), kBadgeW, kBadgeH, t, u, &v, false);
 }
 
 Interaction::Target Interaction::aimAt(const Pose& aim) const {
@@ -60,6 +118,7 @@ Interaction::Target Interaction::aimAt(const Pose& aim) const {
     }
     float t, px, py;
     if (panelRay(aim, &t, &px, &py, false) && t < out.t) { out = {}; out.panel = true; out.t = t; out.px = px; out.py = py; }
+    if (badgeRay(aim, &t, &px) && t < out.t) { out = {}; out.badge = true; out.t = t; }
     return out;
 }
 
@@ -101,10 +160,13 @@ void Interaction::update(const HandInput hands[2], float dt) {
     for (int i = 0; i < 2; ++i) {
         const HandInput& h = hands[i];
         bool trigStart = trig[i] && !prevTrig[i], sqStart = squeeze[i] && !prevSqueeze[i];
-        if (trigStart && pointerHand != i) { triggerT[i] = 0; triggerStart[i] = h.aim.pos; triggerOnModel[i] = !target[i].panel; }
+        if (trigStart && pointerHand != i) {
+            triggerT[i] = 0; triggerStart[i] = h.aim.pos;
+            triggerOnModel[i] = !target[i].panel && !target[i].badge; triggerOnBadge[i] = target[i].badge;
+        }
         if (trig[i]) triggerT[i] += dt;
         if (!grab[i].on) {
-            if (sqStart && target[i].panel) grab[i] = {true, unscaled(h.grip), panel.pose, 0, h.aim.pos, true};
+            if (sqStart && (target[i].panel || target[i].badge)) grab[i] = {true, unscaled(h.grip), panel.pose, 0, h.aim.pos, true};
             else if (sqStart || (trigStart && pointerHand != i && target[i].elem.valid()))
                 grab[i] = {true, unscaled(h.grip), model, 0, h.aim.pos, false};
         }
@@ -120,11 +182,12 @@ void Interaction::update(const HandInput hands[2], float dt) {
             }
             triggerOnModel[i] = false;
         }
+        if (!trig[i] && prevTrig[i] && triggerOnBadge[i]) { if (target[i].badge) setTrueScale(!trueScale); triggerOnBadge[i] = false; }
         prevTrig[i] = trig[i]; prevSqueeze[i] = squeeze[i];
         // thumbstick, when not scrolling the panel: scale and turn the model about its centre
-        if (h.active && !target[i].panel && (std::fabs(h.stickX) > 0.2f || std::fabs(h.stickY) > 0.2f) && !scene.empty()) {
+        if (h.active && !target[i].panel && !target[i].badge && (std::fabs(h.stickX) > 0.2f || std::fabs(h.stickY) > 0.2f) && !scene.empty()) {
             V3 c = apply(model, scene.center());
-            float s = std::exp(h.stickY * dt * 1.2f); Q turn = axisAngle({0, 1, 0}, -h.stickX * dt * 1.8f);
+            float s = trueScale ? 1.f : std::exp(h.stickY * dt * 1.2f); Q turn = axisAngle({0, 1, 0}, -h.stickX * dt * 1.8f);
             model.rot = qnorm(turn * model.rot); model.scale *= s; model.pos = c + rotate(turn, (model.pos - c) * s);
         }
     }
@@ -134,6 +197,8 @@ void Interaction::update(const HandInput hands[2], float dt) {
         if (!twoHand) { twoHand = true; twoDist = std::max(len(b - a), 1e-3f); twoModel = model; twoMid = mid; twoDir = norm(dir); }
         float s = len(b - a) / twoDist; V3 nd = norm(dir);
         Q turn = axisAngle({0, 1, 0}, std::atan2(cross(twoDir, nd).y, dot(twoDir, nd)));
+        if (trueScale) s = 1;
+        else if (std::fabs(std::log(twoModel.scale * s / kTrueScale)) < 0.05f) s = kTrueScale / twoModel.scale;   // snap to 1:1
         model.rot = qnorm(turn * twoModel.rot); model.scale = twoModel.scale * s; model.pos = mid + rotate(turn, (twoModel.pos - twoMid) * s);
         triggerOnModel[0] = triggerOnModel[1] = false;                   // not a click
     } else {
@@ -147,10 +212,12 @@ void Interaction::update(const HandInput hands[2], float dt) {
             else model = compose(delta, grab[i].objStart);
         }
     }
+    badgeHot = target[0].badge || target[1].badge;
     last[0] = hands[0]; last[1] = hands[1];
 }
 
 void Interaction::render(Renderer& r, const M4& vp, V3 eye) {
+    viewer = eye;
     r.upload(scene);
     Lines l; std::vector<float> dots;
     auto dot = [&](V3 p, V3 c) { dots.insert(dots.end(), {p.x, p.y, p.z, c.x, c.y, c.z}); };
@@ -180,6 +247,24 @@ void Interaction::render(Renderer& r, const M4& vp, V3 eye) {
         Pose back = panel.pose; back.pos = back.pos - rotate(back.rot, {0, 0, 0.004f});
         r.drawPanel(plate, false, back, panel.width + 0.02f, panel.height + 0.02f, 0.03f, vp);
         r.drawPanel(panel.tex, panel.external, panel.pose, panel.width, panel.height, 0.022f, vp);
+    }
+    if (panel.visible && !scene.empty()) {
+        // the scale badge: "SCALE 1:4.2   [TRUE SIZE]", or "SCALE 1:1 TRUE SIZE   [FIT VIEW]"
+        std::string ratio = scaleText(), button = trueScale ? "FIT VIEW" : "TRUE SIZE";
+        std::string key = ratio + "|" + button + (badgeHot ? "*" : "");
+        if (key != badgeDrawn || !badgeTex || !glIsTexture(badgeTex)) {
+            int W = (int)(kBadgeW * kBadgePx), H = (int)(kBadgeH * kBadgePx);
+            Canvas c(W, H); c.rect(0, 0, W, H, 14, 17, 21);
+            c.text(32, (H - 48) / 2, "SCALE", 3, 138, 150, 163);
+            if (trueScale) c.text(180, (H - 64) / 2, "1:1", 4, 110, 200, 140), c.text(180 + 4 * 32, (H - 48) / 2, "TRUE SIZE", 3, 110, 200, 140);
+            else c.text(180, (H - 64) / 2, ratio, 4, 235, 238, 242);
+            int bw = 280, x0 = W - 16 - bw;
+            uint8_t g = badgeHot ? 125 : 111, rr = badgeHot ? 58 : 42, bb = badgeHot ? 221 : 201;
+            c.rect(x0, 14, W - 16, H - 14, rr, g, bb, (H - 28) / 2);
+            c.text(x0 + (bw - Canvas::textWidth(button, 3)) / 2, (H - 48) / 2, button, 3, 255, 255, 255);
+            badgeTex = r.makeTexture(W, H, c.px.data(), glIsTexture(badgeTex) ? badgeTex : 0); badgeDrawn = key;
+        }
+        r.drawPanel(badgeTex, false, badgePose(), kBadgeW, kBadgeH, kBadgeH / 2, vp);
     }
     if (cardTex && last[0].active) {                                   // info card floats above the left hand, facing it
         Pose p = unscaled(last[0].grip);

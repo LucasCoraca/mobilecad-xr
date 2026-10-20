@@ -58,6 +58,7 @@ private:
     XrInstance instance = XR_NULL_HANDLE; XrSystemId system = XR_NULL_SYSTEM_ID; XrSession session = XR_NULL_HANDLE;
     XrSpace appSpace = XR_NULL_HANDLE, viewSpace = XR_NULL_HANDLE;
     XrSessionState state = XR_SESSION_STATE_UNKNOWN; bool sessionRunning = false;
+    bool stage = false;              // floor-level tracking space
     struct Eye { XrSwapchain swapchain = XR_NULL_HANDLE; std::vector<GLuint> images; GLuint depth = 0, fbo = 0; int w = 0, h = 0; };
     Eye eyes[2]; int64_t colorFormat = 0; bool srgb = false;
     XrActionSet actionSet = XR_NULL_HANDLE;

@@ -1,7 +1,7 @@
 #!/bin/bash
 # Headset-free test of MobileCAD XR: builds the desktop app and runs it against Monado's simulated headset in Docker.
 #   sim/run.sh            interactive: open http://localhost:6080/vnc.html (or this machine's IP) and drive it
-#   sim/run.sh --test     automated check (scripted controller: select a face, grab and move the model); exit 0 = pass
+#   sim/run.sh --test     automated check (scripted controller: pick, grab + move, panel button, true size on / off); exit 0 = pass
 #
 # Controls in the browser (click into the right-hand "Monado!" panel first):
 #   W A S D / Q E ... move the headset          arrows or right-drag ... look around

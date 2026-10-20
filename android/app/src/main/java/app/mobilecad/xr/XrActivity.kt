@@ -12,6 +12,8 @@ import android.util.Log
 import android.view.InputDevice
 import android.view.MotionEvent
 import android.view.Surface
+import android.view.View
+import android.view.WindowManager
 import android.view.ViewGroup
 import android.widget.FrameLayout
 import android.widget.TextView
@@ -166,18 +168,25 @@ class XrActivity : ComponentActivity() {
     /** The controller ray on the panel, as touches (trigger) / mouse hover and wheel (pointing, thumbstick) on the UI. */
     @Suppress("unused") fun onXrPanelPointer(action: Int, x: Float, y: Float) {
         runOnUiThread {
-            val root = presentation?.window?.decorView ?: return@runOnUiThread
+            if (presentation?.window?.decorView == null) return@runOnUiThread
             val now = SystemClock.uptimeMillis()
+            fun at(w: View): Pair<Float, Float> { val o = IntArray(2); w.getLocationOnScreen(o); return Pair(x - o[0], y - o[1]) }
             fun touch(a: Int) {
-                if (a == MotionEvent.ACTION_DOWN) touchDown = now
-                val ev = MotionEvent.obtain(touchDown, now, a, x, y, 0).apply { source = InputDevice.SOURCE_TOUCHSCREEN }
-                root.dispatchTouchEvent(ev); ev.recycle()
+                if (a == MotionEvent.ACTION_DOWN) { touchDown = now; touchWindow = windowFor(x, y, true) }
+                val w = touchWindow ?: return
+                val (lx, ly) = at(w)
+                val ev = MotionEvent.obtain(touchDown, now, a, lx, ly, 0).apply { source = InputDevice.SOURCE_TOUCHSCREEN }
+                w.dispatchTouchEvent(ev); ev.recycle()
+                if (a == MotionEvent.ACTION_UP) touchWindow = null
             }
             fun mouse(a: Int, vscroll: Float = 0f) {
-                val p = MotionEvent.PointerProperties().apply { id = 0; toolType = MotionEvent.TOOL_TYPE_MOUSE }
-                val c = MotionEvent.PointerCoords().apply { this.x = x; this.y = y; if (vscroll != 0f) setAxisValue(MotionEvent.AXIS_VSCROLL, vscroll) }
-                val ev = MotionEvent.obtain(now, now, a, 1, arrayOf(p), arrayOf(c), 0, 0, 1f, 1f, 0, 0, InputDevice.SOURCE_MOUSE, 0)
-                root.dispatchGenericMotionEvent(ev); ev.recycle()
+                val w = (if (a == MotionEvent.ACTION_HOVER_EXIT) hoverWindow else windowFor(x, y, false)) ?: return
+                if (a == MotionEvent.ACTION_HOVER_MOVE && hoverWindow != null && hoverWindow != w) {
+                    hoverWindow?.let { old -> val (ox, oy) = at(old); send(old, MotionEvent.ACTION_HOVER_EXIT, ox, oy, 0f, now) }
+                }
+                if (a != MotionEvent.ACTION_SCROLL) hoverWindow = if (a == MotionEvent.ACTION_HOVER_EXIT) null else w
+                val (lx, ly) = at(w)
+                send(w, a, lx, ly, vscroll, now)
             }
             when (action) {
                 0 -> touch(MotionEvent.ACTION_DOWN)
@@ -188,6 +197,43 @@ class XrActivity : ComponentActivity() {
                 5 -> mouse(MotionEvent.ACTION_SCROLL, y)
             }
         }
+    }
+
+    private var touchWindow: View? = null
+    private var hoverWindow: View? = null
+
+    private fun send(w: View, a: Int, x: Float, y: Float, vscroll: Float, now: Long) {
+        val p = MotionEvent.PointerProperties().apply { id = 0; toolType = MotionEvent.TOOL_TYPE_MOUSE }
+        val c = MotionEvent.PointerCoords().apply { this.x = x; this.y = y; if (vscroll != 0f) setAxisValue(MotionEvent.AXIS_VSCROLL, vscroll) }
+        val ev = MotionEvent.obtain(now, now, a, 1, arrayOf(p), arrayOf(c), 0, 0, 1f, 1f, 0, 0, InputDevice.SOURCE_MOUSE, 0)
+        w.dispatchGenericMotionEvent(ev); ev.recycle()
+    }
+
+    /** The windows on the panel's display, bottom to top: the Presentation plus the menus, popups and dialogs opened from
+     *  it, which are windows of their own (a dispatch to the Presentation never reaches them). Same lookup as Espresso. */
+    private fun panelWindows(): List<View> {
+        val main = presentation?.window?.decorView ?: return emptyList()
+        val id = main.display?.displayId ?: return listOf(main)
+        return try {
+            val c = Class.forName("android.view.WindowManagerGlobal")
+            val f = c.getDeclaredField("mViews").apply { isAccessible = true }
+            @Suppress("UNCHECKED_CAST")
+            val all = (f.get(c.getMethod("getInstance").invoke(null)) as List<View>).toList()
+            all.filter { it.isAttachedToWindow && it.visibility == View.VISIBLE && it.display?.displayId == id }.ifEmpty { listOf(main) }
+        } catch (e: Exception) { Log.w("mcxr", "window list", e); listOf(main) }
+    }
+
+    /** The window a pointer at (x, y) goes to: the topmost one under it, unless a focusable (modal) window lies above -
+     *  then that one, which closes itself on a touch outside, as a menu or dialog does on a touch screen. */
+    private fun windowFor(x: Float, y: Float, touch: Boolean): View? {
+        val ws = panelWindows()
+        for (w in ws.asReversed()) {
+            val o = IntArray(2); w.getLocationOnScreen(o)
+            if (x >= o[0] && y >= o[1] && x < o[0] + w.width && y < o[1] + w.height) return w
+            val lp = w.layoutParams as? WindowManager.LayoutParams
+            if (touch && w !== presentation?.window?.decorView && lp != null && lp.flags and WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE == 0) return w
+        }
+        return ws.firstOrNull()
     }
 
     // ---------------------------------------------------------------- no headset: touch preview of the XR scene
