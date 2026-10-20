@@ -62,7 +62,7 @@ private:
     struct Eye { XrSwapchain swapchain = XR_NULL_HANDLE; std::vector<GLuint> images; GLuint depth = 0, fbo = 0; int w = 0, h = 0; };
     Eye eyes[2]; int64_t colorFormat = 0; bool srgb = false;
     XrActionSet actionSet = XR_NULL_HANDLE;
-    XrAction aAim = XR_NULL_HANDLE, aGrip = XR_NULL_HANDLE, aSelect = XR_NULL_HANDLE, aSqueeze = XR_NULL_HANDLE, aStick = XR_NULL_HANDLE, aMenu = XR_NULL_HANDLE;
+    XrAction aAim = XR_NULL_HANDLE, aGrip = XR_NULL_HANDLE, aSelect = XR_NULL_HANDLE, aSqueeze = XR_NULL_HANDLE, aStick = XR_NULL_HANDLE, aMenu = XR_NULL_HANDLE, aContext = XR_NULL_HANDLE;
     XrPath hands[2] = {XR_NULL_PATH, XR_NULL_PATH}; XrSpace aimSpace[2] = {}, gripSpace[2] = {};
     XrTime lastTime = 0, firstTime = 0;
     bool makeActions();

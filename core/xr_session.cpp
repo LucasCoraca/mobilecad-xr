@@ -134,7 +134,8 @@ bool Headset::makeActions() {
     };
     if (!make(&aAim, "aim", "Aim", XR_ACTION_TYPE_POSE_INPUT) || !make(&aGrip, "grip", "Hand", XR_ACTION_TYPE_POSE_INPUT) ||
         !make(&aSelect, "select", "Select / grab", XR_ACTION_TYPE_FLOAT_INPUT) || !make(&aSqueeze, "squeeze", "Grab", XR_ACTION_TYPE_FLOAT_INPUT) ||
-        !make(&aStick, "stick", "Scale / turn", XR_ACTION_TYPE_VECTOR2F_INPUT) || !make(&aMenu, "menu", "Next document", XR_ACTION_TYPE_BOOLEAN_INPUT))
+        !make(&aStick, "stick", "Scale / turn", XR_ACTION_TYPE_VECTOR2F_INPUT) || !make(&aMenu, "menu", "Recenter", XR_ACTION_TYPE_BOOLEAN_INPUT) ||
+        !make(&aContext, "context", "Context menu", XR_ACTION_TYPE_BOOLEAN_INPUT))
         return false;
     // suggested bindings per controller; a profile the runtime does not know is simply skipped
     struct B { XrAction a; const char* path; };
@@ -161,21 +162,24 @@ bool Headset::makeActions() {
         {aSelect, pr(std::string(L) + "trigger/value")}, {aSelect, pr(std::string(R) + "trigger/value")},
         {aSqueeze, pr(std::string(L) + "squeeze/value")}, {aSqueeze, pr(std::string(R) + "squeeze/value")},
         {aStick, pr(std::string(L) + "thumbstick")}, {aStick, pr(std::string(R) + "thumbstick")},
-        {aMenu, pr(std::string(L) + "x/click")}, {aMenu, pr(std::string(R) + "a/click")}});
+        {aMenu, pr(std::string(L) + "x/click")}, {aMenu, pr(std::string(R) + "a/click")},
+        {aContext, pr(std::string(L) + "y/click")}, {aContext, pr(std::string(R) + "b/click")}});
     suggest("/interaction_profiles/microsoft/motion_controller", {
         {aAim, pr(std::string(L) + "aim/pose")}, {aAim, pr(std::string(R) + "aim/pose")},
         {aGrip, pr(std::string(L) + "grip/pose")}, {aGrip, pr(std::string(R) + "grip/pose")},
         {aSelect, pr(std::string(L) + "trigger/value")}, {aSelect, pr(std::string(R) + "trigger/value")},
         {aSqueeze, pr(std::string(L) + "squeeze/click")}, {aSqueeze, pr(std::string(R) + "squeeze/click")},
         {aStick, pr(std::string(L) + "thumbstick")}, {aStick, pr(std::string(R) + "thumbstick")},
-        {aMenu, pr(std::string(L) + "menu/click")}, {aMenu, pr(std::string(R) + "menu/click")}});
+        {aMenu, pr(std::string(L) + "menu/click")}, {aMenu, pr(std::string(R) + "menu/click")},
+        {aContext, pr(std::string(L) + "thumbstick/click")}, {aContext, pr(std::string(R) + "thumbstick/click")}});
     suggest("/interaction_profiles/valve/index_controller", {
         {aAim, pr(std::string(L) + "aim/pose")}, {aAim, pr(std::string(R) + "aim/pose")},
         {aGrip, pr(std::string(L) + "grip/pose")}, {aGrip, pr(std::string(R) + "grip/pose")},
         {aSelect, pr(std::string(L) + "trigger/value")}, {aSelect, pr(std::string(R) + "trigger/value")},
         {aSqueeze, pr(std::string(L) + "squeeze/value")}, {aSqueeze, pr(std::string(R) + "squeeze/value")},
         {aStick, pr(std::string(L) + "thumbstick")}, {aStick, pr(std::string(R) + "thumbstick")},
-        {aMenu, pr(std::string(L) + "b/click")}, {aMenu, pr(std::string(R) + "b/click")}});
+        {aMenu, pr(std::string(L) + "b/click")}, {aMenu, pr(std::string(R) + "b/click")},
+        {aContext, pr(std::string(L) + "a/click")}, {aContext, pr(std::string(R) + "a/click")}});
     for (int i = 0; i < 2; ++i) {
         XrActionSpaceCreateInfo sc{XR_TYPE_ACTION_SPACE_CREATE_INFO}; sc.subactionPath = hands[i]; sc.poseInActionSpace.orientation.w = 1;
         sc.action = aAim; XRCHECK(xrCreateActionSpace(session, &sc, &aimSpace[i]));
@@ -227,6 +231,8 @@ void Headset::readHands(XrTime t, HandInput out[2]) {
         gi.action = aStick; if (XR_SUCCEEDED(xrGetActionStateVector2f(session, &gi, &v)) && v.isActive) { h.stickX = v.currentState.x; h.stickY = v.currentState.y; }
         XrActionStateBoolean b{XR_TYPE_ACTION_STATE_BOOLEAN};
         gi.action = aMenu; if (XR_SUCCEEDED(xrGetActionStateBoolean(session, &gi, &b)) && b.isActive) h.menu = b.currentState;
+        b = {XR_TYPE_ACTION_STATE_BOOLEAN};
+        gi.action = aContext; if (XR_SUCCEEDED(xrGetActionStateBoolean(session, &gi, &b)) && b.isActive) h.context = b.currentState;
     }
 }
 

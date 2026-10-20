@@ -17,7 +17,8 @@ public:
     bool init();
     void upload(Scene& s);                                   // (re)creates the mesh buffers when the scene changed
     void beginView(GLuint fbo, int x, int y, int w, int h, bool clear);
-    void drawScene(const Scene& s, const Pose& model, const M4& viewProj, V3 eyePos, ElemRef hover, const std::vector<ElemRef>& selected);
+    /** `fade` < 1 draws the whole model see-through (the app dims it while a sketch is edited). */
+    void drawScene(const Scene& s, const Pose& model, const M4& viewProj, V3 eyePos, ElemRef hover, const std::vector<ElemRef>& selected, float fade = 1.f);
     void drawLines(const Lines& l, const M4& viewProj);
     /** Points (x y z r g b; the second vertex of each Lines pair is ignored) drawn as round dots of `sizePx` pixels. */
     void drawDots(const std::vector<float>& pts, float sizePx, const M4& viewProj);

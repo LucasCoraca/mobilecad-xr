@@ -7,9 +7,15 @@
 //   both hands grabbing:  scale and turn the model between the hands
 //   thumbstick (not on the panel): up/down scales, left/right turns the model
 //   menu / A / X:         onMenu (the app shows / recentres the panel, or switches documents)
+//
+// With `onViewport` set (MobileCAD XR) the space around the panel is the app's 3D view: the trigger anywhere off the panel
+// is a finger on that view (tap, drag, double tap) and pointing is a hovering mouse, so every tool of the app (picking,
+// the sketcher, Draft points, drag arrows) works on the model in the room; the grip moves the model,
+// B / Y opens the view's context menu. The app sends back what its view draws: preselection, overlay, the sketch.
 //   scale badge (under the panel): shows the model's scale; its button switches true size (1 mm = 1 mm) on / off
 #pragma once
 #include <functional>
+#include <map>
 #include <string>
 #include <vector>
 #include "renderer.h"
@@ -25,6 +31,7 @@ struct HandInput {
     float squeeze = 0;          // grip value 0..1 (0 on controllers without one)
     float stickX = 0, stickY = 0;
     bool menu = false;          // menu / A / X button
+    bool context = false;       // B / Y button: the view's context menu
 };
 
 /** A flat UI surface in the world (the app's interface). Local +Z faces the user, X right, Y up; size in metres. */
@@ -59,6 +66,16 @@ public:
     std::string scaleText() const;
     /** Centre of the scale badge's button (world), for scripted tests. */
     V3 badgeButton() const;
+    // ---- the app's 3D view (see the top)
+    std::function<void(int action, V3 o, V3 d, float depthMm)> onViewport;   // 0 press 1 drag 2 release 3 hover 4 leave; model mm
+    std::function<void()> onContextMenu;
+    ElemRef hostHover;                       // the app's preselection
+    float fade = 1;                          // < 1: the model drawn see-through (the app dims it while a sketch is edited)
+    /** What the app's view draws over the model, in model coordinates (mm): lines (x y z x y z r g b), dots (x y z r g b
+     *  sizeDp), text labels. */
+    struct Overlay { std::vector<float> lines, dots; std::vector<std::pair<V3, std::string>> labels; } overlay;
+    /** The sketch being edited, drawn by the app into a texture lying on the sketch plane: corners TL TR BR BL (model mm). */
+    GLuint sketchTex = 0; bool sketchVisible = false; V3 sketchCorners[4];
     // optional info card above the left hand
     GLuint cardTex = 0; int cardW = 0, cardH = 0;
 
@@ -80,6 +97,10 @@ private:
     Pose fitPose; bool fitSaved = false;      // the pose to return to when true size is switched off
     V3 viewer{0, 1.6f, 0};
     bool triggerOnBadge[2] = {false, false}, badgeHot = false;
+    int viewHand = -1; bool viewHover = false; bool prevStick[2] = {false, false};
+    std::map<std::string, std::pair<GLuint, std::pair<int, int>>> labelTex;
+    void modelRay(const Pose& aim, V3* o, V3* d) const;
+    float depthMm(int hand, const Pose& aim) const;
     GLuint badgeTex = 0; std::string badgeDrawn;
     Pose badgePose() const;
     float lowestY() const;

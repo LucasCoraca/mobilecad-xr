@@ -122,15 +122,43 @@ Interaction::Target Interaction::aimAt(const Pose& aim) const {
     return out;
 }
 
+void Interaction::modelRay(const Pose& aim, V3* o, V3* d) const {
+    Pose inv = inverse(model); *o = apply(inv, aim.pos); *d = norm(rotate(inv.rot, forward(aim)));
+}
+
+float Interaction::depthMm(int hand, const Pose& aim) const {
+    if (target[hand].elem.valid()) return target[hand].t / model.scale;
+    V3 o, d; modelRay(aim, &o, &d); return std::max(len(scene.center() - o), 1.f);
+}
+
 void Interaction::update(const HandInput hands[2], float dt) {
-    bool trig[2], squeeze[2];
+    bool trig[2], squeeze[2], host = (bool)onViewport;
     for (int i = 0; i < 2; ++i) {
         const HandInput& h = hands[i];
         trig[i] = h.active && h.select > 0.55f; squeeze[i] = h.active && h.squeeze > 0.55f;
         target[i] = h.active ? aimAt(h.aim) : Target{};
-        hover[i] = target[i].panel ? ElemRef{} : target[i].elem;
+        hover[i] = (target[i].panel || host) ? ElemRef{} : target[i].elem;
         if (h.active && h.menu && !prevMenu[i] && onMenu) onMenu();
         prevMenu[i] = h.active && h.menu;
+        if (h.active && h.context && !prevStick[i] && onContextMenu) onContextMenu();
+        prevStick[i] = h.active && h.context;
+    }
+    // ---- the app's view: a pressed trigger off the panel is a finger on it, a ray pointing into the scene a hovering mouse
+    if (host) {
+        if (viewHand >= 0) {
+            int i = viewHand; V3 o, d; modelRay(hands[i].aim, &o, &d);
+            if (trig[i] && hands[i].active) onViewport(1, o, d, 0);
+            else { onViewport(2, o, d, 0); viewHand = -1; }
+        }
+        if (viewHand < 0 && pointerHand < 0) for (int i : {1, 0})
+            if (trig[i] && !prevTrig[i] && !target[i].panel && !target[i].badge && !grab[i].on) {
+                V3 o, d; modelRay(hands[i].aim, &o, &d); viewHand = i; viewHover = false;
+                onViewport(0, o, d, depthMm(i, hands[i].aim)); break;
+            }
+        int hv = -1;
+        if (viewHand < 0) for (int i : {1, 0}) if (hands[i].active && !trig[i] && !target[i].panel && !target[i].badge && !grab[i].on) { hv = i; break; }
+        if (hv >= 0) { V3 o, d; modelRay(hands[hv].aim, &o, &d); onViewport(3, o, d, depthMm(hv, hands[hv].aim)); viewHover = true; }
+        else if (viewHover && viewHand < 0) { onViewport(4, V3{}, V3{}, 0); viewHover = false; }
     }
     // ---- the panel: one touch pointer, owned by the hand that pressed
     if (pointerHand >= 0) {
@@ -167,13 +195,13 @@ void Interaction::update(const HandInput hands[2], float dt) {
         if (trig[i]) triggerT[i] += dt;
         if (!grab[i].on) {
             if (sqStart && (target[i].panel || target[i].badge)) grab[i] = {true, unscaled(h.grip), panel.pose, 0, h.aim.pos, true};
-            else if (sqStart || (trigStart && pointerHand != i && target[i].elem.valid()))
+            else if (sqStart || (!host && trigStart && pointerHand != i && target[i].elem.valid()))
                 grab[i] = {true, unscaled(h.grip), model, 0, h.aim.pos, false};
         }
-        bool holding = grab[i].panel ? squeeze[i] : (squeeze[i] || trig[i]);
+        bool holding = (grab[i].panel || host) ? squeeze[i] : (squeeze[i] || trig[i]);
         if (grab[i].on && !holding) grab[i].on = false;
         // a short trigger press that did not move = click: pick what the ray is on
-        if (!trig[i] && prevTrig[i] && triggerOnModel[i] && triggerT[i] < 0.35f && len(h.aim.pos - triggerStart[i]) < 0.02f) {
+        if (!host && !trig[i] && prevTrig[i] && triggerOnModel[i] && triggerT[i] < 0.35f && len(h.aim.pos - triggerStart[i]) < 0.02f) {
             ElemRef e = target[i].panel ? ElemRef{} : target[i].elem;
             if (onPick) onPick(e, target[i].point);
             if (!hostSelection) {
@@ -237,9 +265,44 @@ void Interaction::render(Renderer& r, const M4& vp, V3 eye) {
         l.add(g, g + rotate(h.grip.rot, {0, 0.03f, 0}), {0.3f, 0.9f, 0.3f});
         l.add(g, g + rotate(h.grip.rot, {0, 0, 0.05f}), {0.3f, 0.5f, 0.95f});
     }
-    ElemRef hv = hover[1].valid() ? hover[1] : hover[0];
-    if (!scene.empty()) r.drawScene(scene, model, vp, eye, hv, selected);
+    ElemRef hv = onViewport ? hostHover : hover[1].valid() ? hover[1] : hover[0];
+    if (!scene.empty()) r.drawScene(scene, model, vp, eye, hv, selected, fade);
     r.drawLines(l, vp);
+    // what the app's view draws over the model: always on top, as on a screen
+    glDisable(GL_DEPTH_TEST);
+    if (sketchVisible && sketchTex) {
+        V3 c[4]; for (int k = 0; k < 4; ++k) c[k] = apply(model, sketchCorners[k]);
+        V3 ax = c[1] - c[0], ay = c[0] - c[3]; float w = len(ax), h = len(ay);
+        if (w > 1e-6f && h > 1e-6f) {
+            V3 x = ax * (1 / w), y = norm(ay - x * mcxr::dot(ay, x)), z = cross(x, y);
+            r.drawPanel(sketchTex, false, Pose{(c[0] + c[2]) * 0.5f, fromBasis(x, y, z), 1}, w, h, 0, vp);
+        }
+    }
+    if (!overlay.lines.empty()) {
+        Lines ol; const auto& v = overlay.lines;
+        for (size_t i = 0; i + 8 < v.size(); i += 9) ol.add(apply(model, {v[i], v[i + 1], v[i + 2]}), apply(model, {v[i + 3], v[i + 4], v[i + 5]}), {v[i + 6], v[i + 7], v[i + 8]});
+        r.drawLines(ol, vp);
+    }
+    {   // dots, by size
+        const auto& v = overlay.dots; std::map<int, std::vector<float>> bySize;
+        for (size_t i = 0; i + 6 < v.size(); i += 7) { V3 p = apply(model, {v[i], v[i + 1], v[i + 2]}); bySize[(int)v[i + 6]].insert(bySize[(int)v[i + 6]].end(), {p.x, p.y, p.z, v[i + 3], v[i + 4], v[i + 5]}); }
+        for (auto& [sz, pts] : bySize) r.drawDots(pts, sz * 1.5f, vp);
+    }
+    glDisable(GL_DEPTH_TEST);                                           // (drawDots turns it back on)
+    if (labelTex.size() > 256) { for (auto& [k, t] : labelTex) glDeleteTextures(1, &t.first); labelTex.clear(); }
+    for (auto& [p0, text] : overlay.labels) {                         // text labels: billboards, about 1 degree tall
+        auto it = labelTex.find(text);
+        if (it == labelTex.end()) {
+            std::string t = text.substr(0, 48); int W = Canvas::textWidth(t, 2) + 24, H = 44;
+            Canvas cv(W, H); cv.rect(0, 0, W, H, 34, 39, 45, 10); cv.text(12, 6, t, 2, 235, 238, 242);
+            it = labelTex.emplace(text, std::make_pair(r.makeTexture(W, H, cv.px.data()), std::make_pair(W, H))).first;
+        }
+        V3 p = apply(model, p0); float dist = std::max(len(eye - p), 0.05f);
+        V3 z = norm(eye - p), x = norm(cross(V3{0, 1, 0}, z)); if (len(x) < 0.5f) x = {1, 0, 0}; V3 y = cross(z, x);
+        float h = 0.02f * dist, w = h * it->second.second.first / it->second.second.second;
+        r.drawPanel(it->second.first, false, Pose{p + x * (w * 0.5f + 0.012f * dist) + y * (h * 0.7f), fromBasis(x, y, z), 1}, w, h, h * 0.25f, vp);
+    }
+    glEnable(GL_DEPTH_TEST);
     if (panel.visible && panel.tex) {
         // a dark back plate with a slim border, then the UI itself
         static GLuint plate = 0;

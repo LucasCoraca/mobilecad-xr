@@ -13,6 +13,7 @@ struct Mesh {
     std::vector<float> tris;    // x y z nx ny nz faceId   per vertex, 3 vertices per triangle
     std::vector<float> edges;   // x1 y1 z1 x2 y2 z2 edgeId   per segment (7 floats)
     float color[3] = {0.81f, 0.84f, 0.86f};
+    float alpha = 1;            // < 1: drawn see-through (transparent objects, a failed feature's last good shape)
     std::vector<int> faceFirst, faceCount;         // per FreeCAD face id (1-based): its vertex range in tris
     std::vector<int> edgeFirst, edgeCount;         // per FreeCAD edge id (1-based): its segment range in edges
     unsigned vao = 0, vbo = 0, evao = 0, evbo = 0;   // GL objects, made by the renderer

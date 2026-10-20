@@ -9,20 +9,31 @@ try it without a Quest.
 
 ## Modelling in the headset
 
-The floating panel is MobileCAD itself: every workbench and tool (sketcher, Part Design, fillets and chamfers,
-patterns, booleans, assemblies, FEM, drawings), feature dialogs with the number pad, the feature tree, undo, files.
-You use it with the controller ray like a touch screen. The model stands next to it, life-size or scaled, and stays in
-sync with the document: features you add appear in 3D as you type their values, and what you pick in 3D is what the
-tools act on.
+MobileCAD XR is MobileCAD, with its 3D view taken out of the screen and put into the room. The floating panel holds
+the rest of the app: every workbench and tool (sketcher, Part Design, fillets and chamfers, patterns, booleans,
+assemblies, FEM, drawings), feature dialogs with the number pad, the feature tree, undo, files. The model stands next
+to it and **is** the 3D view: the controller ray goes through MobileCAD's own view code, so everything you do with a
+finger on the phone you do in 3D with the trigger, with the same tools and the same results:
 
-| Controller | On the panel | On the model |
+- **Pick** faces, edges and vertices (only visible ones, as in FreeCAD); pointing pre-selects, like a mouse on desktop.
+- **Sketch on the model**: open a sketch on a face and draw on it in the room. Every sketch tool works there with the
+  sketcher's own snapping (part vertices, coincident, horizontal / vertical, on curve) and shows its own constraints,
+  dimensions and live sizes, drawn on the sketch plane while the model fades.
+- **Draft tools** take their points in the room through the Draft snapper (working plane, grid, object snaps).
+- **Drag arrows** (Pad / Pocket length and other quantities) are dragged in 3D.
+
+![Sketching a rectangle on a face of the part, in the room](docs/sketch-in-room.png)
+![Padding it and dragging its length arrow in 3D](docs/pad-in-room.png)
+
+| Controller | On the panel | In the room (the model, the space around it) |
 |---|---|---|
-| Trigger | Tap / drag (buttons, number pad, sketching in the panel's view) | Click: pick the face or edge (adds it to the selection) |
-| Hold trigger | Drag | Grab: move and turn the model with your hand |
-| Grip | Move the panel | Grab the model |
-| Both hands | | Scale and turn the model between your hands |
+| Trigger | Tap / drag, like a finger | Like a finger on MobileCAD's view: tap picks, places sketch points and Draft points; drag drags (sketch geometry, dimension labels, arrows); double tap clears the selection |
+| Pointing | Hover | Pre-selection, and the sketch / Draft tool's preview follows the ray |
+| Grip | Move the panel | Grab the model: move and turn it with your hand |
+| Both grips | | Scale and turn the model between your hands |
 | Thumbstick | Scroll | Up/down scales, left/right turns |
-| A / X (menu) | Bring the panel and the model back in front of you | |
+| B / Y | | The view's context menu (a two-finger tap on the phone) |
+| A / X | Bring the panel and the model back in front of you | |
 | Scale badge (under the panel) | **TRUE SIZE**: the model at its real size, 1 mm = 1 mm · **FIT VIEW**: back to the scaled view | |
 
 ### True size
@@ -35,8 +46,9 @@ scaling with both hands also snaps to 1:1 as you pass it.
 
 ![The BIM example at true size, standing on the floor](docs/true-size.png)
 
-A typical flow: point at a face and click it, then on the panel tap **Sketch** → draw on that face in the panel's
-view → **Pad** → type the length on the number pad → the solid grows in front of you. FreeCAD's example projects ship
+A typical flow: point at a face and click it, tap **Sketch → New Sketch** on the panel, pick Rectangle and click two
+corners on the face, close the sketch (✓), tap **Pad**, then drag its arrow out of the part (or type the length on the
+number pad). FreeCAD's example projects ship
 with the app (Part Design, Assembly, FEM, BIM, Part); open your own `.FCStd` files from the panel's ☰ menu.
 
 **Install on a Quest 3:** enable developer mode (Meta Horizon app → Devices → Developer mode), connect the headset by
@@ -48,8 +60,9 @@ USB, then `adb install MobileCAD-XR-quest.apk` (or drag the APK into Meta Quest 
 Two ways, covering different parts:
 
 - **The whole app, on the Android emulator** (or a phone): without an OpenXR runtime MobileCAD XR shows a preview of
-  the XR scene: the panel with MobileCAD's full UI and the model in 3D. Touch the panel to use it, drag elsewhere to look
-  around, tap the model to pick faces and edges. This exercises everything except the OpenXR runtime itself
+  the XR scene: the panel with MobileCAD's full UI and the model in 3D. One finger is the controller with its trigger pressed
+  (on the panel, and on the model / in the space around it: pick, sketch, place points, drag arrows); two fingers look
+  around. This exercises everything except the OpenXR runtime itself
   (`./gradlew :app:assembleX86Debug`, install, run).
 - **The OpenXR path, on a simulated headset** (below).
 
@@ -78,7 +91,8 @@ the panel interaction. The scenes it loads (`scenes/*.mcxr`) are FreeCAD's examp
 | Path | What |
 |---|---|
 | `core/` | The XR core, shared by both builds: OpenXR session and controller actions (`xr_session`), interaction (`interaction`), GL renderer for OpenGL ES 3 and desktop GL 3.3 (`renderer`), FreeCAD meshes and face picking (`scene`) |
-| `android/` | The headset app (Gradle). Compiles all of MobileCAD from the submodule; `XrActivity.kt` runs MobileCAD's Compose UI on a virtual display whose SurfaceTexture is the panel, turns controller rays into touches, and keeps the 3D model in sync with the document; `xr_android.cpp` runs the core on an OpenXR thread (or the touch preview). Flavors: `arm64` (Quest), `x86` (emulator) |
+| `android/` | The headset app (Gradle). Compiles all of MobileCAD from the submodule; `XrActivity.kt` runs MobileCAD's Compose UI on a virtual display whose SurfaceTexture is the panel, turns controller rays into touches on the panel and into MobileCAD's view (`ViewportView.xrPointer`: a virtual camera
+looking down the ray), and sends what that view draws (the model, preselection, overlay, the sketch rendered by its own editor onto a texture on the sketch plane) to the XR scene; `xr_android.cpp` runs the core on an OpenXR thread (or the touch preview). Flavors: `arm64` (Quest), `x86` (emulator) |
 | `desktop/` | Linux build of the core against any OpenXR runtime (Monado), with a mirror window, `--screenshot` and `--autotest` |
 | `sim/` | The headset-free test bench (Monado + Xvfb + noVNC in Docker) |
 | `mobilecad/` | [MobileCAD](https://github.com/LucasCoraca/mobilecad) as a git submodule: the FreeCAD engine, its build scripts and runtime packaging |

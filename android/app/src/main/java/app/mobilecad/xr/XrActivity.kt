@@ -42,10 +42,11 @@ import javax.microedition.khronos.egl.EGLConfig
 import javax.microedition.khronos.opengles.GL10
 
 /**
- * MobileCAD XR: the whole MobileCAD app, in a headset. MobileCAD's interface (every workbench, the sketcher, feature
- * dialogs, the number pad, the feature tree) runs on a virtual display and is shown on a floating panel you use with the
- * controller ray as a touch screen; the model you are building stands next to it in 3D, where pointing picks faces and
- * edges for the tools and your hands move, turn and scale it.
+ * MobileCAD XR: the whole MobileCAD app, in a headset. MobileCAD's interface (every workbench, feature dialogs, the
+ * number pad, the feature tree) runs on a virtual display and is shown on a floating panel you use with the controller
+ * ray as a touch screen. The model stands in the room and is MobileCAD's 3D view: the controller ray goes through that
+ * view's own touch handling (picking, every sketch tool, Draft points, drag arrows), and what the view draws (the sketch
+ * being edited, preselection, Draft feedback, annotations) is drawn on the model in 3D. Your hands move, turn, scale it.
  *
  * Without an OpenXR runtime (phone, emulator) the same scene is shown as a touch preview, so everything can be tested
  * without a headset.
@@ -63,7 +64,10 @@ class XrActivity : ComponentActivity() {
     private external fun nativeStartXr()
     private external fun nativeStop()
     private external fun nativeBeginScene(title: String)
-    private external fun nativeAddMesh(name: String, tris: FloatArray, edges: FloatArray, r: Float, g: Float, b: Float)
+    private external fun nativeAddMesh(name: String, tris: FloatArray, edges: FloatArray, r: Float, g: Float, b: Float, alpha: Float)
+    private external fun nativeSetView(hoverObj: String, hoverSub: String, fade: Float, lines: FloatArray, dots: FloatArray, labelPos: FloatArray, labelText: Array<String>)
+    private external fun nativeSetSketch(pixels: java.nio.ByteBuffer?, w: Int, h: Int, corners: FloatArray)
+    private external fun nativeModelScale(): Float
     private external fun nativeEndScene(place: Boolean)
     private external fun nativeSetSelection(objs: Array<String>, subs: Array<String>)
     private external fun nativePreviewInit()
@@ -74,6 +78,7 @@ class XrActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         QtHostAccess.attach(this)                       // FreeCAD's QtCore needs a host activity (see MobileCAD)
         app = AppState(this)
+        app.xr = true; app.xrChanged = { viewChanged() }
         app.start()
         app.whenReady { openFirstExample() }
         setContentView(TextView(this).apply {
@@ -104,13 +109,69 @@ class XrActivity : ComponentActivity() {
             nativeBeginScene(doc)
             for ((name, m) in meshes) {
                 if (m.tris.isEmpty() && m.edges.isEmpty()) continue
-                val c = app.colors[name] ?: 0xCFD6DC
-                nativeAddMesh(name, m.tris, m.edges, ((c shr 16) and 255) / 255f, ((c shr 8) and 255) / 255f, (c and 255) / 255f)
+                // as MobileCAD's view draws them: a failed feature's last good shape red and see-through, transparent objects
+                val ghost = app.ghosts.containsKey(name)
+                val c = if (ghost) 0xE0403F else app.colors[name] ?: 0xCFD6DC
+                val alpha = if (ghost) 0.45f else if (name in app.transparent) 0.5f else 1f
+                nativeAddMesh(name, m.tris, m.edges, ((c shr 16) and 255) / 255f, ((c shr 8) and 255) / 255f, (c and 255) / 255f, alpha)
             }
             nativeEndScene(doc != lastDoc)
             lastDoc = doc
             nativeSetSelection(sel.map { it.obj }.toTypedArray(), sel.map { it.sub }.toTypedArray())
+            viewChanged()
         }
+    }
+
+    // ---------------------------------------------------------------- MobileCAD's 3D view, in the room
+    /** Controller rays for the view (render thread): press / drag / release keep their order, consecutive drags and hovers
+     *  collapse to the newest, so the UI thread never falls behind the headset's frame rate. */
+    private val rays = ArrayDeque<FloatArray>()
+    private var raysPosted = false
+    @Suppress("unused") fun onXrViewport(action: Int, ox: Float, oy: Float, oz: Float, dx: Float, dy: Float, dz: Float, depth: Float) {
+        val ev = floatArrayOf(action.toFloat(), ox, oy, oz, dx, dy, dz, depth)
+        synchronized(rays) {
+            val last = rays.lastOrNull()
+            if (last != null && last[0] == ev[0] && (action == 1 || action == 3)) rays[rays.size - 1] = ev else rays.addLast(ev)
+            if (raysPosted) return; raysPosted = true
+        }
+        runOnUiThread {
+            val evs = synchronized(rays) { raysPosted = false; rays.toList().also { rays.clear() } }
+            val v = app.viewport ?: return@runOnUiThread
+            for (e in evs) v.xrPointer(e[0].toInt(), floatArrayOf(e[1], e[2], e[3]), floatArrayOf(e[4], e[5], e[6]), e[7])
+        }
+    }
+    @Suppress("unused") fun onXrContextMenu() { runOnUiThread { app.viewport?.xrContextMenu() } }
+
+    private var viewPosted = false
+    private fun viewChanged() { if (viewPosted) return; viewPosted = true; window.decorView.postOnAnimation { viewPosted = false; sendView() } }
+
+    private var skBmp: android.graphics.Bitmap? = null
+    private var skBuf: java.nio.ByteBuffer? = null
+    private var skRegion: DoubleArray? = null; private var skName = ""; private var skScale = 0f; private var skShown = false
+    /** Sends what the view draws: its overlay as 3D primitives, and the sketch being edited drawn by its own editor onto a
+     *  texture on the sketch plane, covering a stable region around the sketch at a resolution fit for its size in the room. */
+    private fun sendView() {
+        val v = app.viewport ?: return
+        val o = v.xrOverlay()
+        nativeSetView(o.hover?.first ?: "", o.hover?.second ?: "", if (o.dim) 0.35f else 1f, o.lines, o.dots,
+            o.labels.flatMap { it.first.toList() }.toFloatArray(), o.labels.map { it.second }.toTypedArray())
+        val sk = app.sketch; val b = v.xrSketchBounds()
+        if (sk == null || b == null) { if (skShown) { nativeSetSketch(null, 0, 0, FloatArray(12)); skShown = false; skRegion = null }; return }
+        val n = 1024; val scale = nativeModelScale().takeIf { it > 0f } ?: 0.001f        // m per mm
+        var r = skRegion
+        val inside = r != null && b[0] >= r[0] && b[1] >= r[1] && b[2] <= r[0] + r[2] && b[3] <= r[1] + r[2]
+        if (r == null || !inside || sk.name != skName || kotlin.math.abs(scale / skScale - 1f) > 0.3f) {
+            // at least half a metre across in the room, centred on the sketch
+            val ext = maxOf(b[2] - b[0], b[3] - b[1]); val size = maxOf(ext * 1.4, 0.5 / scale)
+            r = doubleArrayOf((b[0] + b[2]) / 2 - size / 2, (b[1] + b[3]) / 2 - size / 2, size); skRegion = r; skName = sk.name; skScale = scale
+        }
+        val bmp = skBmp ?: android.graphics.Bitmap.createBitmap(n, n, android.graphics.Bitmap.Config.ARGB_8888).also { skBmp = it }
+        val metresPerPx = r[2] * scale / n
+        val dpPx = maxOf(1f, (0.0012 / metresPerPx).toFloat())                        // a dp is ~1.2 mm in the room
+        val corners = v.xrDrawSketch(bmp, r[0], r[1], r[2], dpPx) ?: return
+        val buf = skBuf ?: java.nio.ByteBuffer.allocateDirect(n * n * 4).also { skBuf = it }
+        buf.rewind(); bmp.copyPixelsToBuffer(buf)
+        nativeSetSketch(buf, n, n, corners); skShown = true
     }
 
     // ---------------------------------------------------------------- callbacks from the XR core (render thread)
@@ -246,17 +307,20 @@ class XrActivity : ComponentActivity() {
             override fun onSurfaceChanged(gl: GL10?, width: Int, height: Int) { w = width; h = height }
             override fun onDrawFrame(gl: GL10?) { nativePreviewDraw(w, h) }
         })
+        // one finger: the controller with its trigger pressed; two fingers: look around
         view.setOnTouchListener { _, e ->
+            val cx = (0 until e.pointerCount).map { e.getX(it) }.average().toFloat(); val cy = (0 until e.pointerCount).map { e.getY(it) }.average().toFloat()
             when (e.actionMasked) {
                 MotionEvent.ACTION_DOWN -> nativePreviewTouch(0, e.x, e.y)
-                MotionEvent.ACTION_MOVE -> nativePreviewTouch(1, e.x, e.y)
+                MotionEvent.ACTION_POINTER_DOWN -> nativePreviewTouch(4, cx, cy)
+                MotionEvent.ACTION_MOVE -> if (e.pointerCount >= 2) nativePreviewTouch(3, cx, cy) else nativePreviewTouch(1, e.x, e.y)
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> nativePreviewTouch(2, e.x, e.y)
             }
             true
         }
         val note = TextView(this).apply {
             setTextColor(Color.rgb(200, 208, 216)); textSize = 13f; setPadding(28, 18, 28, 18); setBackgroundColor(Color.argb(140, 0, 0, 0))
-            text = "No headset ($reason): preview of the XR scene. Use the panel by touching it; drag elsewhere to look around; tap the model to pick faces and edges."
+            text = "No headset ($reason): preview of the XR scene. One finger is the controller (touch the panel to use it, the model or the space around it to pick, sketch and place points); two fingers look around."
         }
         setContentView(FrameLayout(this).apply {
             addView(view)

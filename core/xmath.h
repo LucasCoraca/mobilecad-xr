@@ -25,6 +25,15 @@ inline Q qnorm(Q q) { float l = std::sqrt(q.x * q.x + q.y * q.y + q.z * q.z + q.
 inline V3 rotate(Q q, V3 v) { V3 u{q.x, q.y, q.z}; V3 t = cross(u, v) * 2.f; return v + t * q.w + cross(u, t); }
 inline Q axisAngle(V3 axis, float a) { V3 n = norm(axis); float s = std::sin(a / 2); return {n.x * s, n.y * s, n.z * s, std::cos(a / 2)}; }
 
+/** Rotation taking the unit axes to the orthonormal basis x, y, z (z = x cross y). */
+inline Q fromBasis(V3 x, V3 y, V3 z) {
+    float tr = x.x + y.y + z.z;
+    if (tr > 0) { float s = std::sqrt(tr + 1) * 2; return qnorm(Q{(y.z - z.y) / s, (z.x - x.z) / s, (x.y - y.x) / s, s / 4}); }
+    if (x.x > y.y && x.x > z.z) { float s = std::sqrt(1 + x.x - y.y - z.z) * 2; return qnorm(Q{s / 4, (y.x + x.y) / s, (z.x + x.z) / s, (y.z - z.y) / s}); }
+    if (y.y > z.z) { float s = std::sqrt(1 + y.y - x.x - z.z) * 2; return qnorm(Q{(y.x + x.y) / s, s / 4, (z.y + y.z) / s, (z.x - x.z) / s}); }
+    float s = std::sqrt(1 + z.z - x.x - y.y) * 2; return qnorm(Q{(z.x + x.z) / s, (z.y + y.z) / s, s / 4, (x.y - y.x) / s});
+}
+
 /** Rigid transform with uniform scale: p' = pos + rot * (scale * p). */
 struct Pose { V3 pos; Q rot; float scale = 1; };
 inline V3 apply(const Pose& t, V3 p) { return t.pos + rotate(t.rot, p * t.scale); }

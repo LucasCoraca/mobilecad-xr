@@ -1,4 +1,5 @@
 #include "renderer.h"
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <string>
@@ -118,7 +119,7 @@ void Renderer::beginView(GLuint fbo, int x, int y, int w, int h, bool doClear) {
     }
 }
 
-void Renderer::drawScene(const Scene& s, const Pose& model, const M4& vp, V3 eye, ElemRef hover, const std::vector<ElemRef>& sel) {
+void Renderer::drawScene(const Scene& s, const Pose& model, const M4& vp, V3 eye, ElemRef hover, const std::vector<ElemRef>& sel, float fade) {
     M4 mm = fromPose(model); M4 mvp = mul(vp, mm);
     glUseProgram(meshProg);
     glUniformMatrix4fv(uMvp, 1, GL_FALSE, mvp.m); glUniformMatrix4fv(uModel, 1, GL_FALSE, mm.m); glUniform3f(uEye, eye.x, eye.y, eye.z);
@@ -129,22 +130,29 @@ void Renderer::drawScene(const Scene& s, const Pose& model, const M4& vp, V3 eye
         first = m.faceFirst[id]; count = m.faceCount[id]; return true;
     };
     glEnable(GL_POLYGON_OFFSET_FILL); glPolygonOffset(1.f, 2.f);
-    for (size_t i = 0; i < s.meshes.size(); ++i) {
-        const Mesh& m = s.meshes[i]; if (!m.triVerts()) continue;
-        glBindVertexArray(m.vao); glEnableVertexAttribArray(1);
-        glUniform1f(uLit, 1.f); glUniform4f(uColor, m.color[0], m.color[1], m.color[2], 1.f);
-        glDrawArrays(GL_TRIANGLES, 0, (GLsizei)m.triVerts());
-        int f, c;
-        if (hover.mesh == (int)i && hover.kind == 'F' && faceRange(m, hover.id, f, c)) { glUniform4f(uColor, hoverCol.x, hoverCol.y, hoverCol.z, 1.f); glDrawArrays(GL_TRIANGLES, f, c); }
-        for (const ElemRef& r : sel)
-            if (r.mesh == (int)i && r.kind == 'F' && faceRange(m, r.id, f, c)) { glUniform4f(uColor, selCol.x, selCol.y, selCol.z, 1.f); glDrawArrays(GL_TRIANGLES, f, c); }
+    // opaque meshes first, then the see-through ones, blended over them without hiding what is behind
+    for (int pass = 0; pass < 2; ++pass) {
+        if (pass == 1) { glEnable(GL_BLEND); glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA); glDepthMask(GL_FALSE); }
+        for (size_t i = 0; i < s.meshes.size(); ++i) {
+            const Mesh& m = s.meshes[i]; if (!m.triVerts()) continue;
+            float a = m.alpha * fade; if ((a < 0.999f) != (pass == 1)) continue;
+            glBindVertexArray(m.vao); glEnableVertexAttribArray(1);
+            glUniform1f(uLit, 1.f); glUniform4f(uColor, m.color[0], m.color[1], m.color[2], a);
+            glDrawArrays(GL_TRIANGLES, 0, (GLsizei)m.triVerts());
+            int f, c; float ha = std::max(a, 0.7f);
+            if (hover.mesh == (int)i && hover.kind == 'F' && faceRange(m, hover.id, f, c)) { glUniform4f(uColor, hoverCol.x, hoverCol.y, hoverCol.z, ha); glDrawArrays(GL_TRIANGLES, f, c); }
+            for (const ElemRef& r : sel)
+                if (r.mesh == (int)i && r.kind == 'F' && faceRange(m, r.id, f, c)) { glUniform4f(uColor, selCol.x, selCol.y, selCol.z, ha); glDrawArrays(GL_TRIANGLES, f, c); }
+        }
     }
+    glDepthMask(GL_TRUE);
     glDisable(GL_POLYGON_OFFSET_FILL);
+    if (fade < 0.999f) { glEnable(GL_BLEND); glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA); } else glDisable(GL_BLEND);
     glUniform1f(uLit, 0.f); glVertexAttrib3f(1, 0.f, 0.f, 1.f);                       // edges carry no normals
     for (size_t i = 0; i < s.meshes.size(); ++i) {
         const Mesh& m = s.meshes[i]; if (!m.edgeSegments()) continue;
         glBindVertexArray(m.evao);
-        glUniform4f(uColor, 0.17f, 0.21f, 0.25f, 1.f); glLineWidth(1.f);
+        glUniform4f(uColor, 0.17f, 0.21f, 0.25f, fade); glLineWidth(1.f);
         glDrawArrays(GL_LINES, 0, (GLsizei)(m.edgeSegments() * 2));
         auto edge = [&](int id, V3 col) {
             if (id <= 0 || id >= (int)m.edgeFirst.size() || m.edgeFirst[id] < 0) return;
@@ -154,7 +162,7 @@ void Renderer::drawScene(const Scene& s, const Pose& model, const M4& vp, V3 eye
         if (hover.mesh == (int)i && hover.kind == 'E') edge(hover.id, V3{0.40f, 0.78f, 0.79f});
         for (const ElemRef& r : sel) if (r.mesh == (int)i && r.kind == 'E') edge(r.id, selCol);
     }
-    glLineWidth(1.f); glBindVertexArray(0);
+    glLineWidth(1.f); glBindVertexArray(0); glDisable(GL_BLEND);
 }
 
 void Renderer::drawLines(const Lines& l, const M4& vp) {
