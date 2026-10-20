@@ -17,6 +17,17 @@ around you like a desk with three monitors, with nothing behind it, so the model
   your hands like a keyboard; banners, selection chips, menus and dialogs float above it, over the model;
 - **right:** the docked panels: tool panels, feature dialogs, task panels, the sketch's constraint list, the number pad.
 
+Every window can be moved on its own: grip it and put it where you like (A / X puts them all back). Menus and dialogs
+are shown whole, each on its own surface.
+
+The model stands on a **build plate**: a see-through tabletop on its ground plane (FreeCAD's XY plane) around the
+3D origin, with a grid (its spacing printed on the rim) and the X / Y / Z axes. It is the table you work on: grab its rim
+with the grip to pick it up and carry it (it turns with your wrist and stays level), or point at the rim and pull the
+trigger to slide it around. A new document keeps the table where you put it; an empty one shows just the plate, ready
+for a first sketch.
+
+![The build plate: the model on its origin, the tool panel and the tree around it](docs/build-plate.png)
+
 It is the whole app: every workbench and tool (sketcher, Part Design, fillets and chamfers, patterns, booleans,
 assemblies, FEM, drawings), feature dialogs with the number pad, the feature tree, undo, files. Menus and dialogs close
 when you click outside them, the model included, as on a touch screen. The model **is** the 3D view: the controller ray goes through MobileCAD's own view code, so everything you do with a
@@ -36,11 +47,12 @@ finger on the phone you do in 3D with the trigger, with the same tools and the s
 |---|---|---|
 | Trigger | Tap / drag, like a finger | Like a finger on MobileCAD's view: tap picks, places sketch points and Draft points; drag drags (sketch geometry, dimension labels, arrows); double tap clears the selection |
 | Pointing | Hover | Pre-selection, and the sketch / Draft tool's preview follows the ray |
-| Grip | Move the whole interface | Grab the model: move and turn it with your hand |
+| Grip | Move that window | Grab the model: move and turn it with your hand · on the build plate's rim: pick the table up and carry it |
+| Trigger on the build plate's rim | | Slide the table where the ray points |
 | Both grips | | Scale and turn the model between your hands |
-| Thumbstick | Scroll | Up/down scales, left/right turns |
+| Thumbstick | Scroll | Up/down scales, left/right turns (about the origin) |
 | B / Y | | The view's context menu (a two-finger tap on the phone) |
-| A / X | Bring the interface and the model back in front of you | |
+| A / X | Put the windows back and the table in front of you | |
 | Scale badge (under the tool bars) | **TRUE SIZE**: the model at its real size, 1 mm = 1 mm · **FIT VIEW**: back to the scaled view | |
 
 ### True size

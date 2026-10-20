@@ -70,6 +70,7 @@ class XrActivity : ComponentActivity() {
     private external fun nativeSetView(hoverObj: String, hoverSub: String, fade: Float, lines: FloatArray, dots: FloatArray, labelPos: FloatArray, labelText: Array<String>)
     private external fun nativeSetSketch(pixels: java.nio.ByteBuffer?, w: Int, h: Int, corners: FloatArray)
     private external fun nativeModelScale(): Float
+    private external fun nativeSetPopups(rects: FloatArray)
     private external fun nativeEndScene(place: Boolean)
     private external fun nativeSetSelection(objs: Array<String>, subs: Array<String>)
     private external fun nativePreviewInit()
@@ -201,7 +202,7 @@ class XrActivity : ComponentActivity() {
     private fun layoutPanel() {
         val k = 1.5f; val t = XrLayout.TREE * k; val st = XrLayout.STAGE * k; val sd = XrLayout.SIDE * k
         val h = XrLayout.HEIGHT * k; val b = XrLayout.BARS * k
-        nativeSetLayout((t + st + sd).toInt(), h.toInt(), floatArrayOf(0f, 0f, t, h,  t, 0f, st, h - b,  t, h - b, st, b,  t + st, 0f, sd, h))
+        nativeSetLayout((t + st + sd).toInt(), h.toInt(), floatArrayOf(0f, 0f, t, h,  t, b, st, h - b,  t, 0f, st, b,  t + st, 0f, sd, h))
     }
 
     /** Called on the GL thread with the panel's texture: MobileCAD's UI is rendered into it through a virtual display. */
@@ -246,6 +247,7 @@ class XrActivity : ComponentActivity() {
     @Suppress("unused") fun updatePanelTexture(): Boolean {
         if (!panelFrame) return false
         panelFrame = false; try { panelTexture?.updateTexImage() } catch (e: Exception) { Log.w("mcxr", "panel", e) }
+        if (!popupsPosted) { popupsPosted = true; runOnUiThread { popupsPosted = false; sendPopups() } }
         return true
     }
 
@@ -281,6 +283,16 @@ class XrActivity : ComponentActivity() {
                 5 -> mouse(MotionEvent.ACTION_SCROLL, y)
             }
         }
+    }
+
+    @Volatile private var popupsPosted = false
+    private var lastPopups = FloatArray(0)
+    /** Where the menus, popups and dialogs over MobileCAD's window are: the headset shows each as a surface of its own. */
+    private fun sendPopups() {
+        val main = presentation?.window?.decorView ?: return
+        val r = panelWindows().filter { it !== main }.flatMap { w -> val o = IntArray(2); w.getLocationOnScreen(o)
+            listOf(o[0].toFloat(), o[1].toFloat(), w.width.toFloat(), w.height.toFloat()) }.toFloatArray()
+        if (!r.contentEquals(lastPopups)) { lastPopups = r; nativeSetPopups(r) }
     }
 
     private var touchWindow: View? = null

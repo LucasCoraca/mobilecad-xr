@@ -34,6 +34,8 @@ public:
     /** Forget GL objects of a previous context (they are gone with it): the next upload starts afresh. */
     void contextLost() { uploaded = ~0u; uploadedScene = nullptr; buffers.clear(); arrays.clear(); }
     float clear[3] = {0.11f, 0.13f, 0.16f};
+    /** Parts of the image drawPanel leaves out (up to 4, x0 y0 x1 y1 in 0..1, y down): shown elsewhere. */
+    std::vector<float> holes;
     /** 2.2 when drawing into an sRGB swapchain (colours here are sRGB values, the target expects linear), 1 otherwise. */
     float gamma = 1.f;
 private:

@@ -1,7 +1,8 @@
 // What the user does in XR, independent of OpenXR: hands in, model / panel poses, highlights and callbacks out. The OpenXR
 // session (xr_session) and the headset-free preview both feed it HandInput every frame.
 //
-//   ray on the UI panel:  trigger = touch (tap, drag)   grip = move the panel   thumbstick up/down = scroll
+//   ray on the UI panel:  trigger = touch (tap, drag)   grip = move the panel (with sheets: that window)
+//                         thumbstick up/down = scroll
 //   ray on the model:     trigger click = pick the face / edge (into the document's selection)
 //                         grip, or trigger held = grab: the model follows the hand (move + rotate)
 //   both hands grabbing:  scale and turn the model between the hands
@@ -13,6 +14,9 @@
 // the sketcher, Draft points, drag arrows) works on the model in the room; the grip moves the model,
 // B / Y opens the view's context menu. The app sends back what its view draws: preselection, overlay, the sketch.
 //   scale badge (under the panel): shows the model's scale; its button switches true size (1 mm = 1 mm) on / off
+//   build plate: a tabletop on the model's ground plane (FreeCAD's XY plane) around its origin, with a grid and the axes;
+//                the model stands on it. Its rim is a handle: grip on the rim picks the table up and carries it (it
+//                turns with your wrist and stays level), trigger on the rim slides it along where the ray points
 #pragma once
 #include <functional>
 #include <map>
@@ -36,7 +40,7 @@ struct HandInput {
 
 /** One part of the UI image shown as its own flat surface: the pixel rectangle (x y w h) at a pose relative to the panel,
  *  `pxPerM` pixels per metre. */
-struct Sheet { float x = 0, y = 0, w = 0, h = 0; Pose local; float pxPerM = 1600; };
+struct Sheet { float x = 0, y = 0, w = 0, h = 0; Pose local, home; float pxPerM = 1600; };   // home: where placePanel puts it
 
 /** The app's interface in the world. Without `sheets` it is one flat surface: local +Z faces the user, X right, Y up, size
  *  in metres. With `sheets` (MobileCAD XR) the image is cut into surfaces arranged around the user, see-through where the
@@ -48,6 +52,11 @@ struct Panel {
     int pxW = 1600, pxH = 1000; // texture / touch coordinate space
     GLuint tex = 0; bool external = false;
     std::vector<Sheet> sheets; bool seeThrough = false; int badgeSheet = -1;   // the scale badge hangs under this sheet
+    /** Windows over the UI (menus, popups, dialogs: x y w h px, bottom to top). Each is shown whole, on the plane of the
+     *  sheet it mostly covers and a little in front of it, and is left out of the other sheets: a menu dropping from the
+     *  bars into the view area is not cut in two. */
+    std::vector<float> popups;
+    Sheet popupSheet(size_t i) const;
     std::vector<uint8_t> mask; int maskW = 0, maskH = 0;     // alpha at 1/maskScale of the image
     static constexpr int maskScale = 8;
     bool solid(float px, float py) const;                    // something drawn at (or right next to) this pixel
@@ -86,12 +95,19 @@ public:
     struct Overlay { std::vector<float> lines, dots; std::vector<std::pair<V3, std::string>> labels; } overlay;
     /** The sketch being edited, drawn by the app into a texture lying on the sketch plane: corners TL TR BR BL (model mm). */
     GLuint sketchTex = 0; bool sketchVisible = false; V3 sketchCorners[4];
+    /** The build plate (see the top). Its radius (model mm) covers the model and is at least 15 cm in the room. */
+    bool plate = true;
+    float plateRadius() const;
+    float plateGrid() const;                                 // grid spacing (mm): 1, 2, 5 x 10^n, ~8 cells to the rim
     // optional info card above the left hand
     GLuint cardTex = 0; int cardW = 0, cardH = 0;
 
     /** Puts the model ~0.7 m in front of the viewer, a little below eye height, about 40 cm across. */
     void placeModel(const Pose& head);
-    /** Puts the UI panel to the left-front of the viewer, turned towards them. */
+    /** A new document: the build plate stays where it is, sized for the new contents. */
+    void fitScale();
+    bool placed = false;                     // placeModel ran (the user has a table to keep)
+    /** Puts the UI panel to the left-front of the viewer, turned towards them (with sheets: each back to its home). */
     void placePanel(const Pose& head);
     void update(const HandInput hands[2], float dt);
     void render(Renderer& r, const M4& viewProj, V3 eye);
@@ -100,14 +116,15 @@ public:
     Pose sheetPose(const Sheet& s) const { return compose(Pose{panel.pose.pos, panel.pose.rot, 1}, s.local); }
 
 private:
-    struct Grab { bool on = false; Pose handStart, objStart; float t = 0; V3 aimStart; bool panel = false; };
+    struct Grab { bool on = false; Pose handStart, objStart; float t = 0; V3 aimStart; bool panel = false, plate = false; bool slide = false; V3 slideStart; int sheet = -1; };
     Grab grab[2];
     bool twoHand = false; float twoDist = 0; Pose twoModel; V3 twoMid, twoDir;
     bool prevTrig[2] = {false, false}, prevSqueeze[2] = {false, false}, prevMenu[2] = {false, false};
     int pointerHand = -1;                     // hand holding a touch on the panel
     int hoverHand = -1; float hoverX = 0, hoverY = 0;
     float triggerT[2] = {0, 0}; V3 triggerStart[2]; bool triggerOnModel[2] = {false, false};
-    Pose fitPose; bool fitSaved = false;      // the pose to return to when true size is switched off
+    Pose fitPose; bool fitSaved = false;
+    bool placedEmpty = false; Pose placeHead;  // placed before the document had a shape: size it again when it gets one      // the pose to return to when true size is switched off
     V3 viewer{0, 1.6f, 0};
     bool triggerOnBadge[2] = {false, false}, badgeHot = false;
     int viewHand = -1; bool viewHover = false; bool prevStick[2] = {false, false};
@@ -117,7 +134,10 @@ private:
     GLuint badgeTex = 0; std::string badgeDrawn;
     Pose badgePose() const;
     float lowestY() const;
-    struct Target { bool panel = false, badge = false; float t = 1e30f; float px = 0, py = 0; int sheet = -1; ElemRef elem; V3 point; };
+    struct Target { bool panel = false, badge = false, rim = false; float t = 1e30f; float px = 0, py = 0; int sheet = -1; ElemRef elem; V3 point; };
+    GLuint plateTex = 0; std::string plateDrawn; bool rimHot = false;
+    Pose platePose() const;
+    bool rimRay(const Pose& aim, float* t) const;
     Target target[2];
     HandInput last[2];
     Target aimAt(const Pose& aim) const;

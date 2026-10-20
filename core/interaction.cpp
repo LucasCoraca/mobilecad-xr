@@ -14,21 +14,77 @@ static Q facing(V3 from, V3 to) {                      // yaw-only rotation whos
     d = norm(d); return axisAngle({0, 1, 0}, std::atan2(d.x, d.z));
 }
 
+/** Ray against a w x h rectangle centred on `rect` (local X right, Y up): distance and 0..1 coordinates (v down). */
+static bool rectRay(const Pose& aim, const Pose& rect, float w, float h, float* t, float* u, float* v, bool clamp) {
+    V3 n = rotate(rect.rot, {0, 0, 1}), d = forward(aim);
+    float den = dot(d, n); if (std::fabs(den) < 1e-5f) return false;
+    float tt = dot(rect.pos - aim.pos, n) / den; if (tt <= 0) return false;
+    V3 local = rotate(conj(rect.rot), aim.pos + d * tt - rect.pos);
+    float uu = local.x / w + 0.5f, vv = 0.5f - local.y / h;
+    if (!clamp && (uu < 0 || uu > 1 || vv < 0 || vv > 1)) return false;
+    *t = tt; *u = std::max(0.f, std::min(1.f, uu)); *v = std::max(0.f, std::min(1.f, vv));
+    return true;
+}
+
 void Interaction::placeModel(const Pose& head) {
-    if (scene.empty()) return;
-    float r = std::max(scene.radius(), 1e-3f);
     V3 f = forward(head); f.y = 0; f = len(f) > 1e-3f ? norm(f) : V3{0, 0, -1};
     V3 right = cross(f, V3{0, 1, 0});
-    // in front, inside the UI's surfaces around the viewer; with a single panel (to the left-front), to its right
-    V3 target = panel.sheets.empty() ? head.pos + f * 0.75f + right * 0.32f + V3{0, -0.2f, 0} : head.pos + f * 0.65f + V3{0, -0.22f, 0};
     float yaw = std::atan2(-f.x, -f.z);
     // FreeCAD is Z-up, OpenXR is Y-up: turn the model upright, then face the viewer
     Q upright = axisAngle({1, 0, 0}, -1.5707963f);
-    model = {V3{}, qnorm(axisAngle({0, 1, 0}, yaw) * upright), 0.2f / r};    // ~40 cm across
-    model.pos = target - apply(model, scene.center());
+    if (panel.sheets.empty()) {
+        if (scene.empty()) return;
+        // to the right of the UI panel, ~40 cm across
+        float r = std::max(scene.radius(), 1e-3f);
+        V3 target = head.pos + f * 0.75f + right * 0.32f + V3{0, -0.2f, 0};
+        model = {V3{}, qnorm(axisAngle({0, 1, 0}, yaw) * upright), 0.2f / r};
+        model.pos = target - apply(model, scene.center());
+    } else {
+        // the origin on a table in front of the viewer, below the tool bars, everything within ~28 cm of it
+        model = {head.pos + f * 0.75f + V3{0, -0.42f, 0}, qnorm(axisAngle({0, 1, 0}, yaw) * upright), 1};
+        fitScale();
+    }
+    placedEmpty = scene.empty(); placeHead = head; placed = true;
     hover[0] = hover[1] = {};
     if (!hostSelection) selected.clear();
     trueScale = false; fitSaved = false;
+}
+
+void Interaction::fitScale() {
+    // everything within ~28 cm of the origin, which stays put
+    float reach = 100;
+    if (!scene.empty()) {
+        reach = 1e-3f;
+        for (int k = 0; k < 8; ++k) reach = std::max(reach, len(V3{k & 1 ? scene.max.x : scene.min.x, k & 2 ? scene.max.y : scene.min.y, k & 4 ? scene.max.z : scene.min.z}));
+    }
+    model.scale = 0.28f / reach; trueScale = false; fitSaved = false;
+}
+
+float Interaction::plateRadius() const {
+    float rxy = 0;
+    if (!scene.empty()) for (int k = 0; k < 4; ++k)
+        rxy = std::max(rxy, std::hypot(k & 1 ? scene.max.x : scene.min.x, k & 2 ? scene.max.y : scene.min.y));
+    float r = std::max(rxy * 1.15f, 0.15f / std::max(model.scale, 1e-9f));
+    float g = 1; while (g * 10 < r / 8) g *= 10;                     // round up to whole grid cells (a stable size)
+    float step = r / 8 <= g ? g : r / 8 <= 2 * g ? 2 * g : r / 8 <= 5 * g ? 5 * g : 10 * g;
+    return std::ceil(r / step) * step;
+}
+
+float Interaction::plateGrid() const {
+    float r = plateRadius(), g = 1; while (g * 10 < r / 8) g *= 10;
+    return r / 8 <= g ? g : r / 8 <= 2 * g ? 2 * g : r / 8 <= 5 * g ? 5 * g : 10 * g;
+}
+
+Pose Interaction::platePose() const {                                 // on the XY plane at the origin, 2 mm under the model
+    return {apply(model, V3{}) - rotate(model.rot, V3{0, 0, 0.002f}), model.rot, 1};
+}
+
+bool Interaction::rimRay(const Pose& aim, float* t) const {
+    if (!plate) return false;
+    float rw = plateRadius() * model.scale, u, v;
+    if (!rectRay(aim, platePose(), 2 * rw, 2 * rw, t, &u, &v, false)) return false;
+    float r = std::hypot(u - 0.5f, v - 0.5f) * 2 * rw;
+    return r <= rw && r >= rw - std::max(0.025f, 0.1f * rw);          // the outer band, at least 2.5 cm wide
 }
 
 float Interaction::lowestY() const {
@@ -39,11 +95,11 @@ float Interaction::lowestY() const {
 }
 
 void Interaction::setTrueScale(bool on) {
-    if (scene.empty() || on == trueScale) return;
+    if ((scene.empty() && !plate) || on == trueScale) return;
     trueScale = on;
     if (!on) { if (fitSaved) model = fitPose; fitSaved = false; return; }
     fitPose = model; fitSaved = true;
-    V3 c = apply(model, scene.center());                              // scale about the model's centre
+    V3 c = apply(model, plate ? V3{} : scene.center());               // scale about the build plate's centre (the model's)
     model.pos = c + (model.pos - c) * (kTrueScale / model.scale); model.scale = kTrueScale;
     float r = scene.radius() * kTrueScale;
     if (r > 0.45f) {
@@ -77,24 +133,16 @@ V3 Interaction::badgeButton() const { return apply(badgePose(), V3{kBadgeW / 2 -
 
 void Interaction::placePanel(const Pose& head) {
     V3 f = forward(head); f.y = 0; f = len(f) > 1e-3f ? norm(f) : V3{0, 0, -1};
-    if (!panel.sheets.empty()) { panel.pose = {head.pos, facing(head.pos, head.pos + f), 1}; return; }   // the sheets surround the viewer
+    if (!panel.sheets.empty()) {                                     // the sheets surround the viewer, each in its place
+        panel.pose = {head.pos, facing(head.pos, head.pos + f), 1};
+        for (Sheet& s : panel.sheets) s.local = s.home;
+        return;
+    }
     V3 right = cross(f, V3{0, 1, 0});
     V3 c = head.pos + f * 0.95f - right * 0.42f + V3{0, -0.12f, 0};
     panel.pose = {c, facing(head.pos, c), 1};
     // tilt back a little, like a drafting table
     panel.pose.rot = qnorm(panel.pose.rot * axisAngle({1, 0, 0}, -0.12f));
-}
-
-/** Ray against a w x h rectangle centred on `rect` (local X right, Y up): distance and 0..1 coordinates (v down). */
-static bool rectRay(const Pose& aim, const Pose& rect, float w, float h, float* t, float* u, float* v, bool clamp) {
-    V3 n = rotate(rect.rot, {0, 0, 1}), d = forward(aim);
-    float den = dot(d, n); if (std::fabs(den) < 1e-5f) return false;
-    float tt = dot(rect.pos - aim.pos, n) / den; if (tt <= 0) return false;
-    V3 local = rotate(conj(rect.rot), aim.pos + d * tt - rect.pos);
-    float uu = local.x / w + 0.5f, vv = 0.5f - local.y / h;
-    if (!clamp && (uu < 0 || uu > 1 || vv < 0 || vv > 1)) return false;
-    *t = tt; *u = std::max(0.f, std::min(1.f, uu)); *v = std::max(0.f, std::min(1.f, vv));
-    return true;
 }
 
 bool Panel::solid(float px, float py) const {
@@ -105,6 +153,24 @@ bool Panel::solid(float px, float py) const {
     return false;
 }
 
+Sheet Panel::popupSheet(size_t i) const {
+    Sheet p; p.x = popups[4 * i]; p.y = popups[4 * i + 1]; p.w = popups[4 * i + 2]; p.h = popups[4 * i + 3];
+    int best = -1; float most = 0;
+    for (int k = 0; k < (int)sheets.size(); ++k) {
+        const Sheet& s = sheets[k];
+        float ox = std::min(p.x + p.w, s.x + s.w) - std::max(p.x, s.x), oy = std::min(p.y + p.h, s.y + s.h) - std::max(p.y, s.y);
+        if (ox > 0 && oy > 0 && ox * oy > most) { most = ox * oy; best = k; }
+    }
+    if (best < 0) return p;
+    const Sheet& s = sheets[best]; p.pxPerM = s.pxPerM;
+    // kept inside that sheet where it fits (a menu dropping from the bars lands at the top of the view area)
+    float x = std::max(s.x, std::min(p.x, s.x + s.w - p.w)), y = std::max(s.y, std::min(p.y, s.y + s.h - p.h));
+    if (p.w > s.w) x = s.x; if (p.h > s.h) y = s.y;                  // too big: from its top-left corner
+    V3 off{((x + p.w / 2) - (s.x + s.w / 2)) / s.pxPerM, ((s.y + s.h / 2) - (y + p.h / 2)) / s.pxPerM, 0.012f * (1 + i)};
+    p.local = compose(s.local, Pose{off, Q{}, 1});
+    return p;
+}
+
 bool Interaction::panelRay(const Pose& aim, float* t, float* px, float* py, bool clamp, int* sheet) const {
     if (!panel.visible) return false;
     if (panel.sheets.empty()) {
@@ -113,13 +179,15 @@ bool Interaction::panelRay(const Pose& aim, float* t, float* px, float* py, bool
         return true;
     }
     // a drag stays on the sheet it started on; otherwise the nearest sheet with something drawn where the ray meets it
-    bool hit = false;
-    for (int i = 0; i < (int)panel.sheets.size(); ++i) {
+    bool hit = false; int ns = (int)panel.sheets.size(), np = (int)panel.popups.size() / 4;
+    auto inPopup = [&](float x, float y) { for (int k = 0; k < np; ++k) { const float* r = &panel.popups[4 * k];
+        if (x >= r[0] && y >= r[1] && x < r[0] + r[2] && y < r[1] + r[3]) return true; } return false; };
+    for (int i = 0; i < ns + np; ++i) {
         if (clamp && i != pointerSheet) continue;
-        const Sheet& s = panel.sheets[i]; float tt, u, v;
+        Sheet s = i < ns ? panel.sheets[i] : panel.popupSheet(i - ns); float tt, u, v;
         if (!rectRay(aim, sheetPose(s), s.w / s.pxPerM, s.h / s.pxPerM, &tt, &u, &v, clamp) || (hit && tt >= *t)) continue;
         float x = s.x + u * s.w, y = s.y + v * s.h;
-        if (!clamp && !panel.solid(x, y)) continue;
+        if (!clamp && (!panel.solid(x, y) || (i < ns && inPopup(x, y)))) continue;
         hit = true; *t = tt; *px = x; *py = y; if (sheet) *sheet = i;
     }
     return hit;
@@ -132,7 +200,7 @@ void Interaction::updateMask(Renderer& r) {
 }
 
 bool Interaction::badgeRay(const Pose& aim, float* t, float* u) const {
-    float v; return panel.visible && !scene.empty() && rectRay(aim, badgePose(), kBadgeW, kBadgeH, t, u, &v, false);
+    float v; return panel.visible && (!scene.empty() || plate) && rectRay(aim, badgePose(), kBadgeW, kBadgeH, t, u, &v, false);
 }
 
 Interaction::Target Interaction::aimAt(const Pose& aim) const {
@@ -151,6 +219,7 @@ Interaction::Target Interaction::aimAt(const Pose& aim) const {
     // the UI's surfaces are drawn over the model, so what is on them wins wherever the ray meets them
     if (panelRay(aim, &t, &px, &py, false, &sh) && (t < out.t || panel.seeThrough)) { out = {}; out.panel = true; out.t = t; out.px = px; out.py = py; out.sheet = sh; }
     if (badgeRay(aim, &t, &px) && t < out.t) { out = {}; out.badge = true; out.t = t; }
+    if (!out.panel && !out.badge && rimRay(aim, &t) && t < out.t) { out = {}; out.rim = true; out.t = t; }
     return out;
 }
 
@@ -164,6 +233,7 @@ float Interaction::depthMm(int hand, const Pose& aim) const {
 }
 
 void Interaction::update(const HandInput hands[2], float dt) {
+    if (placedEmpty && !scene.empty()) placeModel(placeHead);
     bool trig[2], squeeze[2], host = (bool)onViewport;
     for (int i = 0; i < 2; ++i) {
         const HandInput& h = hands[i];
@@ -183,12 +253,12 @@ void Interaction::update(const HandInput hands[2], float dt) {
             else { onViewport(2, o, d, 0); viewHand = -1; }
         }
         if (viewHand < 0 && pointerHand < 0) for (int i : {1, 0})
-            if (trig[i] && !prevTrig[i] && !target[i].panel && !target[i].badge && !grab[i].on) {
+            if (trig[i] && !prevTrig[i] && !target[i].panel && !target[i].badge && !target[i].rim && !grab[i].on) {
                 V3 o, d; modelRay(hands[i].aim, &o, &d); viewHand = i; viewHover = false;
                 onViewport(0, o, d, depthMm(i, hands[i].aim)); break;
             }
         int hv = -1;
-        if (viewHand < 0) for (int i : {1, 0}) if (hands[i].active && !trig[i] && !target[i].panel && !target[i].badge && !grab[i].on) { hv = i; break; }
+        if (viewHand < 0) for (int i : {1, 0}) if (hands[i].active && !trig[i] && !target[i].panel && !target[i].badge && !target[i].rim && !grab[i].on) { hv = i; break; }
         if (hv >= 0) { V3 o, d; modelRay(hands[hv].aim, &o, &d); onViewport(3, o, d, depthMm(hv, hands[hv].aim)); viewHover = true; }
         else if (viewHover && viewHand < 0) { onViewport(4, V3{}, V3{}, 0); viewHover = false; }
     }
@@ -226,11 +296,20 @@ void Interaction::update(const HandInput hands[2], float dt) {
         }
         if (trig[i]) triggerT[i] += dt;
         if (!grab[i].on) {
-            if (sqStart && (target[i].panel || target[i].badge)) grab[i] = {true, unscaled(h.grip), panel.pose, 0, h.aim.pos, true};
+            if (sqStart && (target[i].panel || target[i].badge)) {
+                // grip on a window moves that window (a menu / dialog, or the scale badge: all of them)
+                int sh = target[i].panel && target[i].sheet < (int)panel.sheets.size() ? target[i].sheet : -1;
+                grab[i] = {true, unscaled(h.grip), sh >= 0 ? sheetPose(panel.sheets[sh]) : panel.pose, 0, h.aim.pos, true};
+                grab[i].sheet = sh;
+            }
+            else if ((sqStart || (trigStart && pointerHand != i)) && target[i].rim) {
+                grab[i] = {true, unscaled(h.grip), model, 0, h.aim.pos, false, true};
+                if (!sqStart) { grab[i].slide = true; grab[i].slideStart = h.aim.pos + forward(h.aim) * target[i].t; }
+            }
             else if (sqStart || (!host && trigStart && pointerHand != i && target[i].elem.valid()))
                 grab[i] = {true, unscaled(h.grip), model, 0, h.aim.pos, false};
         }
-        bool holding = (grab[i].panel || host) ? squeeze[i] : (squeeze[i] || trig[i]);
+        bool holding = grab[i].plate ? (squeeze[i] || trig[i]) : (grab[i].panel || host) ? squeeze[i] : (squeeze[i] || trig[i]);
         if (grab[i].on && !holding) grab[i].on = false;
         // a short trigger press that did not move = click: pick what the ray is on
         if (!host && !trig[i] && prevTrig[i] && triggerOnModel[i] && triggerT[i] < 0.35f && len(h.aim.pos - triggerStart[i]) < 0.02f) {
@@ -245,8 +324,8 @@ void Interaction::update(const HandInput hands[2], float dt) {
         if (!trig[i] && prevTrig[i] && triggerOnBadge[i]) { if (target[i].badge) setTrueScale(!trueScale); triggerOnBadge[i] = false; }
         prevTrig[i] = trig[i]; prevSqueeze[i] = squeeze[i];
         // thumbstick, when not scrolling the panel: scale and turn the model about its centre
-        if (h.active && !target[i].panel && !target[i].badge && (std::fabs(h.stickX) > 0.2f || std::fabs(h.stickY) > 0.2f) && !scene.empty()) {
-            V3 c = apply(model, scene.center());
+        if (h.active && !target[i].panel && !target[i].badge && (std::fabs(h.stickX) > 0.2f || std::fabs(h.stickY) > 0.2f) && (!scene.empty() || plate)) {
+            V3 c = apply(model, plate ? V3{} : scene.center());
             float s = trueScale ? 1.f : std::exp(h.stickY * dt * 1.2f); Q turn = axisAngle({0, 1, 0}, -h.stickX * dt * 1.8f);
             model.rot = qnorm(turn * model.rot); model.scale *= s; model.pos = c + rotate(turn, (model.pos - c) * s);
         }
@@ -268,11 +347,30 @@ void Interaction::update(const HandInput hands[2], float dt) {
         }
         for (int i = 0; i < 2; ++i) if (grab[i].on) {
             Pose delta = compose(unscaled(hands[i].grip), inverse(grab[i].handStart));
-            if (grab[i].panel) { panel.pose = compose(delta, grab[i].objStart); panel.pose.scale = 1; }
+            if (grab[i].panel && grab[i].sheet >= 0 && grab[i].sheet < (int)panel.sheets.size()) {
+                Pose w = compose(delta, grab[i].objStart); w.scale = 1;
+                panel.sheets[grab[i].sheet].local = compose(inverse(Pose{panel.pose.pos, panel.pose.rot, 1}), w);
+            } else if (grab[i].panel) { panel.pose = compose(delta, grab[i].objStart); panel.pose.scale = 1; }
+            else if (grab[i].plate && grab[i].slide) {
+                // slid by the ray: the point it grabbed follows the ray across the horizontal plane it was on
+                V3 o = hands[i].aim.pos, d = forward(hands[i].aim); float y = grab[i].slideStart.y;
+                if (std::fabs(d.y) > 1e-3f) {
+                    float tt = (y - o.y) / d.y;
+                    if (tt > 0 && tt < 20) model.pos = grab[i].objStart.pos + (o + d * tt - grab[i].slideStart);
+                }
+            } else if (grab[i].plate) {
+                // carried by its rim: it follows the hand and turns with the wrist about it, but stays level
+                auto yaw = [](const Q& q) { V3 x = rotate(q, {1, 0, 0}); return std::atan2(-x.z, x.x); };
+                Q turn = axisAngle({0, 1, 0}, yaw(hands[i].grip.rot) - yaw(grab[i].handStart.rot));
+                const Pose& s0 = grab[i].objStart;
+                model.rot = qnorm(turn * s0.rot); model.scale = s0.scale;
+                model.pos = hands[i].grip.pos + rotate(turn, s0.pos - grab[i].handStart.pos);
+            }
             else model = compose(delta, grab[i].objStart);
         }
     }
     badgeHot = target[0].badge || target[1].badge;
+    rimHot = target[0].rim || target[1].rim || (grab[0].on && grab[0].plate) || (grab[1].on && grab[1].plate);
     last[0] = hands[0]; last[1] = hands[1];
 }
 
@@ -287,7 +385,7 @@ void Interaction::render(Renderer& r, const M4& vp, V3 eye) {
     }
     for (int i = 0; i < 2; ++i) {
         const HandInput& h = last[i]; if (!h.active) continue;
-        const Target& t = target[i]; bool hit = t.panel || t.elem.valid();
+        const Target& t = target[i]; bool hit = t.panel || t.elem.valid() || t.rim;
         float len_ = hit ? t.t : 1.5f; V3 end = h.aim.pos + forward(h.aim) * len_;
         V3 col = t.panel ? V3{0.92f, 0.94f, 0.97f} : t.elem.valid() ? V3{0.35f, 0.75f, 1.f} : V3{0.55f, 0.60f, 0.66f};
         l.add(h.aim.pos, end, col);
@@ -299,6 +397,35 @@ void Interaction::render(Renderer& r, const M4& vp, V3 eye) {
     }
     ElemRef hv = onViewport ? hostHover : hover[1].valid() ? hover[1] : hover[0];
     if (!scene.empty()) r.drawScene(scene, model, vp, eye, hv, selected, fade);
+    if (plate) {
+        // the build plate: a see-through disc with a grid (bolder every 5 cells) and a rim, then the axes from the origin
+        float R = plateRadius(), g = plateGrid();
+        char key[64]; std::snprintf(key, sizeof key, "%g|%g|%d", R, g, (int)rimHot);
+        if (key != plateDrawn || !plateTex || !glIsTexture(plateTex)) {
+            const int N = 1024; Canvas c(N, N); float band = std::max(0.025f / model.scale, 0.1f * R), px = 2 * R / N;
+            for (int y = 0; y < N; ++y) for (int x = 0; x < N; ++x) {
+                float mx = (x + 0.5f) * px - R, my = R - (y + 0.5f) * px, rr = std::hypot(mx, my);
+                if (rr > R) continue;
+                uint8_t* p = &c.px[(y * N + x) * 4];
+                auto set = [&](int r_, int g_, int b_, int a) { p[0] = r_; p[1] = g_; p[2] = b_; p[3] = a; };
+                if (rr > R - band) { if (rimHot) set(66, 133, 230, 210); else set(78, 88, 100, 190); continue; }
+                set(34, 39, 46, 120);
+                auto on = [&](float v, float step, float w) { float m = std::fabs(std::fmod(std::fabs(v) + step / 2, step) - step / 2); return m < w * px; };
+                if (on(mx, 5 * g, 1.6f) || on(my, 5 * g, 1.6f)) set(150, 160, 172, 190);
+                else if (on(mx, g, 0.9f) || on(my, g, 0.9f)) set(105, 115, 128, 160);
+            }
+            char lab[32]; std::snprintf(lab, sizeof lab, g < 1000 ? "GRID %g MM" : "GRID %g M", g < 1000 ? g : g / 1000);
+            int sc = 3; c.text((N - Canvas::textWidth(lab, sc)) / 2, N - (int)(band / px / 2) - 8 * sc, lab, sc, 235, 238, 242);
+            plateTex = r.makeTexture(N, N, c.px.data(), glIsTexture(plateTex) ? plateTex : 0); plateDrawn = key;
+        }
+        float w = 2 * R * model.scale;
+        r.drawPanel(plateTex, false, platePose(), w, w, w / 2, vp);
+        Lines ax;
+        ax.add(apply(model, {0, 0, 0}), apply(model, {R, 0, 0}), {0.90f, 0.30f, 0.30f});
+        ax.add(apply(model, {0, 0, 0}), apply(model, {0, R, 0}), {0.35f, 0.80f, 0.35f});
+        ax.add(apply(model, {0, 0, 0}), apply(model, {0, 0, 0.35f * R}), {0.35f, 0.55f, 0.95f});
+        r.drawLines(ax, vp);
+    }
     r.drawLines(l, vp);
     // what the app's view draws over the model: always on top, as on a screen
     glDisable(GL_DEPTH_TEST);
@@ -338,10 +465,17 @@ void Interaction::render(Renderer& r, const M4& vp, V3 eye) {
     if (panel.visible && panel.tex && !panel.sheets.empty()) {
         // the UI's surfaces: drawn over the model (as windows over a 3D view), see-through where the UI draws nothing
         glDisable(GL_DEPTH_TEST);
-        for (const Sheet& s : panel.sheets) {
-            float uv[4] = {s.x / panel.pxW, s.y / panel.pxH, s.w / panel.pxW, s.h / panel.pxH};
+        size_t np = panel.popups.size() / 4;
+        for (size_t k = 0; k < np && k < 4; ++k) { const float* p = &panel.popups[4 * k];
+            r.holes.insert(r.holes.end(), {p[0] / panel.pxW, p[1] / panel.pxH, (p[0] + p[2]) / panel.pxW, (p[1] + p[3]) / panel.pxH}); }
+        auto draw = [&](const Sheet& s) {
+            // half a pixel in from the edges, so filtering does not bleed the neighbouring part of the image in
+            float uv[4] = {(s.x + 0.5f) / panel.pxW, (s.y + 0.5f) / panel.pxH, (s.w - 1) / panel.pxW, (s.h - 1) / panel.pxH};
             r.drawPanel(panel.tex, panel.external, sheetPose(s), s.w / s.pxPerM, s.h / s.pxPerM, 0, vp, 1, uv, panel.seeThrough);
-        }
+        };
+        for (const Sheet& s : panel.sheets) draw(s);
+        r.holes.clear();
+        for (size_t k = 0; k < np; ++k) draw(panel.popupSheet(k));
         glEnable(GL_DEPTH_TEST);
     } else if (panel.visible && panel.tex) {
         // a dark back plate with a slim border, then the UI itself
@@ -351,7 +485,7 @@ void Interaction::render(Renderer& r, const M4& vp, V3 eye) {
         r.drawPanel(plate, false, back, panel.width + 0.02f, panel.height + 0.02f, 0.03f, vp);
         r.drawPanel(panel.tex, panel.external, panel.pose, panel.width, panel.height, 0.022f, vp);
     }
-    if (panel.visible && !scene.empty()) {
+    if (panel.visible && (!scene.empty() || plate)) {
         // the scale badge: "SCALE 1:4.2   [TRUE SIZE]", or "SCALE 1:1 TRUE SIZE   [FIT VIEW]"
         std::string ratio = scaleText(), button = trueScale ? "FIT VIEW" : "TRUE SIZE";
         std::string key = ratio + "|" + button + (badgeHot ? "*" : "");

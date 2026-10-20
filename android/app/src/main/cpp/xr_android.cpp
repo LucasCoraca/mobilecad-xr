@@ -48,23 +48,24 @@ void drainQueue() {
 }
 
 /** The UI around the viewer, as on a desk with three monitors: the stage (MobileCAD's view area: banners, menus, dialogs,
- *  drawings) straight ahead a metre away behind the model, the tool bars hinged under it and tilted up towards the hands
- *  like a keyboard, the feature tree on the left and the feature dialogs / task panels on the right, turned towards the
+ *  drawings) straight ahead a metre away behind the model, the tool bars low and close, tilted up towards the eyes like
+ *  a keyboard, the feature tree on the left and the feature dialogs / task panels on the right, turned towards the
  *  viewer. Everything is see-through where MobileCAD draws nothing. Local frame: the viewer's eyes, -Z ahead. */
 void arrangeSheets(const std::vector<float>& r) {
     gIa.panel.sheets.clear();
     if (r.size() < 16) return;
-    const float ppm = 1600, D = 1.0f, wing = 0.62f, tilt = 0.55f;
+    const float ppm = 1600, D = 1.0f, wing = 0.62f, tilt = 0.84f;
     auto sheet = [&](int i) { Sheet s; s.x = r[4 * i]; s.y = r[4 * i + 1]; s.w = r[4 * i + 2]; s.h = r[4 * i + 3]; s.pxPerM = ppm; return s; };
     Sheet tree = sheet(0), stage = sheet(1), bars = sheet(2), side = sheet(3);
     float ws = stage.w / ppm, hs = stage.h / ppm, top = 0.16f;
     stage.local = {V3{0, top - hs / 2, -D}, Q{}, 1};
-    V3 hinge{0, top - hs, -D};
+    // the bars lie low and close, facing the eyes like a keyboard, in front of the build plate (which stands ~75 cm ahead)
     Q tq = axisAngle({1, 0, 0}, -tilt);
-    bars.local = {hinge + rotate(tq, V3{0, -bars.h / ppm / 2, 0}), tq, 1};
+    bars.local = {V3{0, -0.62f, -0.55f}, tq, 1}; bars.pxPerM = 2200;     // closer, so denser: about as wide to the eye
     Q lq = axisAngle({0, 1, 0}, wing), rq = axisAngle({0, 1, 0}, -wing);
     tree.local = {V3{-ws / 2, 0, -D} + rotate(lq, V3{-tree.w / ppm / 2, top - tree.h / ppm / 2, 0}), lq, 1};
     side.local = {V3{ws / 2, 0, -D} + rotate(rq, V3{side.w / ppm / 2, top - side.h / ppm / 2, 0}), rq, 1};
+    for (Sheet* s : {&tree, &stage, &bars, &side}) s->home = s->local;
     gIa.panel.sheets = {tree, stage, bars, side};
     gIa.panel.seeThrough = true; gIa.panel.badgeSheet = 2;           // the scale badge hangs under the bars
 }
@@ -153,7 +154,7 @@ void xrMain() {
 // ---- headset-free preview: you stand at the origin; one finger is the controller with its trigger pressed (on the panel
 // and on the model / into the scene alike), two fingers look around
 struct Preview {
-    float yaw = 0, pitch = -0.12f, fov = 0.62f;
+    float yaw = 0, pitch = -0.38f, fov = 0.62f;     // looking down at the build plate
     int mode = 0;                 // 0 idle, 1 trigger held, 2 looking around
     float lastX = 0, lastY = 0, tx = 0, ty = 0;
     bool pressSeen = false, releasePending = false;   // a quick tap is held for at least one frame
@@ -208,7 +209,8 @@ JNIEXPORT void JNICALL Java_app_mobilecad_xr_XrActivity_nativeAddMesh(JNIEnv* e,
 }
 /** `place`: a new document - put the model in front of the viewer (an edit of the same document keeps where it is). */
 JNIEXPORT void JNICALL Java_app_mobilecad_xr_XrActivity_nativeEndScene(JNIEnv*, jobject, jboolean place) {
-    if (place) post([] { gPlaceModel = true; });
+    // the first one is put in front of the viewer; later ones keep the table where the user put it, sized for them
+    if (place) post([] { if (gIa.placed) gIa.fitScale(); else gPlaceModel = true; });
 }
 JNIEXPORT void JNICALL Java_app_mobilecad_xr_XrActivity_nativeSetSelection(JNIEnv* e, jobject, jobjectArray objs, jobjectArray subs) {
     std::vector<std::pair<std::string, std::string>> sel;
@@ -261,6 +263,12 @@ JNIEXPORT void JNICALL Java_app_mobilecad_xr_XrActivity_nativeSetSketch(JNIEnv* 
     });
 }
 
+/** The windows over the UI (menus, popups, dialogs), x y w h px each, bottom to top. */
+JNIEXPORT void JNICALL Java_app_mobilecad_xr_XrActivity_nativeSetPopups(JNIEnv* e, jobject, jfloatArray rects) {
+    std::vector<float> r(e->GetArrayLength(rects)); e->GetFloatArrayRegion(rects, 0, (jsize)r.size(), r.data());
+    post([r] { gIa.panel.popups = r; });
+}
+
 JNIEXPORT jfloat JNICALL Java_app_mobilecad_xr_XrActivity_nativeModelScale(JNIEnv*, jobject) { return gIa.model.scale; }
 
 // ---- preview (GLSurfaceView thread) ----
@@ -285,7 +293,7 @@ JNIEXPORT void JNICALL Java_app_mobilecad_xr_XrActivity_nativePreviewDraw(JNIEnv
     gPv.w = w; gPv.h = h;
     drainQueue();
     if (gPlacePanel.exchange(false)) gIa.placePanel(kHead);
-    if (!gIa.scene.empty() && gPlaceModel.exchange(false)) gIa.placeModel(kHead);
+    if (gPlaceModel.exchange(false)) gIa.placeModel(kHead);
     updatePanel();
     HandInput hands[2];
     hands[1].active = true; hands[1].aim = previewRay(gPv.tx, gPv.ty); hands[1].grip = hands[1].aim;

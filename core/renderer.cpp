@@ -48,8 +48,10 @@ layout(location=0) in vec3 aPos; layout(location=1) in vec2 aUv; uniform mat4 uM
 void main(){ vQ = aUv; vUv = uUv.xy + aUv * uUv.zw; gl_Position = uMvp * vec4(aPos,1.0); })";
 static const char* kPanelMask = R"(
 in vec2 vQ; uniform vec2 uSize; uniform float uRadius; uniform float uGamma; uniform float uDim; uniform float uAlpha; out vec4 o;
+uniform vec4 uHole[4]; uniform int uHoles;
 float mask(vec2 uv){ vec2 p = abs((uv - 0.5) * uSize) - (uSize * 0.5 - vec2(uRadius)); return length(max(p, 0.0)) - uRadius; }
-vec4 finish(vec4 c){ if (mask(vQ) > 0.0) discard; return vec4(pow(c.rgb * uDim, vec3(uGamma)), c.a); })";
+vec4 finish(vec4 c){ if (mask(vQ) > 0.0) discard;
+  for (int i = 0; i < 4; ++i) if (i < uHoles && vUv.x >= uHole[i].x && vUv.y >= uHole[i].y && vUv.x <= uHole[i].z && vUv.y <= uHole[i].w) discard; return vec4(pow(c.rgb * uDim, vec3(uGamma)), c.a); })";
 static const char* kTexFs = R"(in vec2 vUv; uniform sampler2D uTex;
 %MASK%
 void main(){ o = finish(texture(uTex, vUv)); })";
@@ -196,6 +198,9 @@ void Renderer::drawPanel(GLuint tex, bool external, const Pose& c, float w, floa
     glUniform1f(glGetUniformLocation(prog, "uGamma"), gamma); glUniform2f(glGetUniformLocation(prog, "uSize"), w, h);
     glUniform1f(glGetUniformLocation(prog, "uRadius"), radius); glUniform1f(glGetUniformLocation(prog, "uDim"), dim);
     glUniform4f(glGetUniformLocation(prog, "uUv"), uv[0], uv[1], uv[2], uv[3]); glUniform1f(glGetUniformLocation(prog, "uAlpha"), alpha ? 1.f : 0.f);
+    int nh = (int)std::min<size_t>(holes.size() / 4, 4);
+    glUniform1i(glGetUniformLocation(prog, "uHoles"), nh);
+    if (nh) glUniform4fv(glGetUniformLocation(prog, "uHole"), nh, holes.data());
     glActiveTexture(GL_TEXTURE0); glBindTexture(target, tex);
     glEnable(GL_BLEND);
     // an external image with alpha is a composited window surface: premultiplied

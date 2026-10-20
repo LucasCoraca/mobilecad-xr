@@ -252,7 +252,7 @@ bool Headset::frame(Interaction& ia, Renderer& r) {
         if (headValid) head = toPose(hl.pose);
         if (needsPlacement && headValid) {
             if (onPlaced) onPlaced(head);
-            if (!ia.scene.empty()) { ia.placeModel(head); needsPlacement = false; }
+            if (!ia.scene.empty() || ia.plate) { ia.placeModel(head); needsPlacement = false; }
         }
         HandInput hin[2]; readHands(fs.predictedDisplayTime, hin);
         if (!firstTime) firstTime = fs.predictedDisplayTime;
