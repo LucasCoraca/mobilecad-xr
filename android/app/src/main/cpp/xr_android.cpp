@@ -35,6 +35,7 @@ std::mutex gQueueLock; std::vector<std::function<void()>> gQueue;   // scene / s
 std::thread gXrThread; std::atomic<bool> gStop{false};
 std::atomic<bool> gPlaceModel{true}, gPlacePanel{true};
 std::atomic<int> gPanelW{2220}, gPanelH{1200};                      // the UI's virtual display, in pixels (set by the app)
+std::atomic<float> gPxPerDp{1.5f};
 std::mutex gSheetLock; std::vector<float> gSheetRects;               // its parts: x y w h each (tree, stage, bars, side)
 
 JNIEnv* env() { JNIEnv* e = nullptr; gVm->GetEnv((void**)&e, JNI_VERSION_1_6); return e; }
@@ -54,14 +55,15 @@ void drainQueue() {
 void arrangeSheets(const std::vector<float>& r) {
     gIa.panel.sheets.clear();
     if (r.size() < 16) return;
-    const float ppm = 1600, D = 1.0f, wing = 0.62f, tilt = 0.84f;
+    // sizes as at 1.5 px per dp (1600 px per metre: a dp is ~0.94 mm a metre away); a denser display is only sharper
+    const float k = gPxPerDp / 1.5f, ppm = 1600 * k, D = 1.0f, wing = 0.62f, tilt = 0.84f;
     auto sheet = [&](int i) { Sheet s; s.x = r[4 * i]; s.y = r[4 * i + 1]; s.w = r[4 * i + 2]; s.h = r[4 * i + 3]; s.pxPerM = ppm; return s; };
     Sheet tree = sheet(0), stage = sheet(1), bars = sheet(2), side = sheet(3);
     float ws = stage.w / ppm, hs = stage.h / ppm, top = 0.16f;
     stage.local = {V3{0, top - hs / 2, -D}, Q{}, 1};
     // the bars lie low and close, facing the eyes like a keyboard, in front of the build plate (which stands ~75 cm ahead)
     Q tq = axisAngle({1, 0, 0}, -tilt);
-    bars.local = {V3{0, -0.62f, -0.55f}, tq, 1}; bars.pxPerM = 2200;     // closer, so denser: about as wide to the eye
+    bars.local = {V3{0, -0.62f, -0.55f}, tq, 1}; bars.pxPerM = 2200 * k;     // closer, so denser: about as wide to the eye
     Q lq = axisAngle({0, 1, 0}, wing), rq = axisAngle({0, 1, 0}, -wing);
     tree.local = {V3{-ws / 2, 0, -D} + rotate(lq, V3{-tree.w / ppm / 2, top - tree.h / ppm / 2, 0}), lq, 1};
     side.local = {V3{ws / 2, 0, -D} + rotate(rq, V3{side.w / ppm / 2, top - side.h / ppm / 2, 0}), rq, 1};
@@ -78,14 +80,16 @@ void createPanel() {
     glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_MIN_FILTER, GL_LINEAR); glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE); glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     gIa.panel.tex = tex; gIa.panel.external = true; gIa.panel.pxW = pw; gIa.panel.pxH = ph;
-    gIa.panel.width = pw / 1600.f; gIa.panel.height = gIa.panel.width * ph / pw;   // 1600 px per metre
+    gIa.panel.width = pw / (1600.f * gPxPerDp / 1.5f); gIa.panel.height = gIa.panel.width * ph / pw;   // 1600 px per metre at 1.5 px/dp
     gIa.panel.visible = true;
     JNIEnv* e = env(); e->CallVoidMethod(gActivity, method(e, "createPanelSurface", "(III)V"), (jint)tex, pw, ph);
 }
 /** Latches the newest UI image; a few times a second, reads back where it is see-through (for the rays). */
 void updatePanel() {
     static double lastMask = 0; static bool changed = false;
-    JNIEnv* e = env(); changed |= e->CallBooleanMethod(gActivity, method(e, "updatePanelTexture", "()Z"));
+    JNIEnv* e = env(); bool fresh = e->CallBooleanMethod(gActivity, method(e, "updatePanelTexture", "()Z"));
+    if (fresh) gIa.panelChanged(gRenderer);
+    changed |= fresh;
     double now = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
     if (changed && now - lastMask > 0.1) { gIa.updateMask(gRenderer); changed = false; lastMask = now; }
 }
@@ -181,8 +185,8 @@ JNIEXPORT void JNICALL Java_app_mobilecad_xr_XrActivity_nativeAttach(JNIEnv* e, 
     gActivity = e->NewGlobalRef(self);
 }
 /** The UI's virtual display size and its parts (x y w h px: tree, stage, bars, side); before the XR start. */
-JNIEXPORT void JNICALL Java_app_mobilecad_xr_XrActivity_nativeSetLayout(JNIEnv* e, jobject, jint w, jint h, jfloatArray rects) {
-    gPanelW = w; gPanelH = h;
+JNIEXPORT void JNICALL Java_app_mobilecad_xr_XrActivity_nativeSetLayout(JNIEnv* e, jobject, jint w, jint h, jfloat pxPerDp, jfloatArray rects) {
+    gPanelW = w; gPanelH = h; gPxPerDp = pxPerDp;
     std::vector<float> r(e->GetArrayLength(rects)); e->GetFloatArrayRegion(rects, 0, (jsize)r.size(), r.data());
     std::lock_guard<std::mutex> l(gSheetLock); gSheetRects = r;
 }
@@ -267,6 +271,21 @@ JNIEXPORT void JNICALL Java_app_mobilecad_xr_XrActivity_nativeSetSketch(JNIEnv* 
 JNIEXPORT void JNICALL Java_app_mobilecad_xr_XrActivity_nativeSetPopups(JNIEnv* e, jobject, jfloatArray rects) {
     std::vector<float> r(e->GetArrayLength(rects)); e->GetFloatArrayRegion(rects, 0, (jsize)r.size(), r.data());
     post([r] { gIa.panel.popups = r; });
+}
+
+/** The sketch's text labels: their texture (premultiplied RGBA; null = none) and per label: point (model mm), box centre
+ *  offset and size (dp), texture cell (u0 v0 u1 v1). */
+JNIEXPORT void JNICALL Java_app_mobilecad_xr_XrActivity_nativeSetSketchLabels(JNIEnv* e, jobject, jobject pixels, jint w, jint h, jfloatArray labels) {
+    if (!pixels) { post([] { gIa.sketchLabels.clear(); }); return; }
+    const uint8_t* src = (const uint8_t*)e->GetDirectBufferAddress(pixels); if (!src) return;
+    std::vector<uint8_t> px(src, src + (size_t)w * h * 4);
+    std::vector<float> v(e->GetArrayLength(labels)); e->GetFloatArrayRegion(labels, 0, (jsize)v.size(), v.data());
+    post([px = std::move(px), w, h, v = std::move(v)] {
+        gIa.sketchLabelTex = gRenderer.makeTexture(w, h, px.data(), gIa.sketchLabelTex);
+        gIa.sketchLabels.clear();
+        for (size_t i = 0; i + 10 < v.size(); i += 11)
+            gIa.sketchLabels.push_back({V3{v[i], v[i + 1], v[i + 2]}, v[i + 3], v[i + 4], v[i + 5], v[i + 6], {v[i + 7], v[i + 8], v[i + 9] - v[i + 7], v[i + 10] - v[i + 8]}});
+    });
 }
 
 JNIEXPORT jfloat JNICALL Java_app_mobilecad_xr_XrActivity_nativeModelScale(JNIEnv*, jobject) { return gIa.model.scale; }

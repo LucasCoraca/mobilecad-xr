@@ -147,7 +147,7 @@ int main(int argc, char** argv) {
     struct Step { const char* what; bool ok = false; };
     std::vector<Step> steps{{"pick a face/edge on the model"}, {"grab + move the model 25 cm"}, {"click the panel's Next file button"},
                             {"scale badge: true size 1:1"}, {"scale badge: back to fit view"}};
-    float fitScale = 0; V3 movedFrom{}; bool movedSet = false, frozen = false, autoDone = false; Pose frozenAim; size_t docBefore = 0;
+    float fitScale = 0; V3 movedFrom{}; bool movedSet = false, frozen = false, autoDone = false, clicked = false; Pose frozenAim; size_t docBefore = 0;
     if (autotest) {
         hs.inputOverride = [&](HandInput h[2], const Pose& head, double t) {
             if (ia.scene.empty() || t < 1.0) return;
@@ -158,7 +158,7 @@ int main(int argc, char** argv) {
                 r.aim = {from, lookRot(target - from), 1};
                 if (t > 2.4) { if (!frozen) { frozenAim = r.aim; frozen = true; } r.aim = frozenAim; }   // a real hand keeps its angle
                 r.grip = r.aim;
-                if (t > 1.5 && t < 1.6) r.select = 1;
+                if (t > 1.5 && !clicked) { r.select = 1; clicked = true; }       // one frame, however slow the frames are
                 if (t > 2.5 && t < 4.0) {
                     if (!movedSet) { movedFrom = ia.model.pos; movedSet = true; }
                     r.squeeze = 1; float k = (float)std::min(1.0, (t - 2.6) / 1.2); if (k > 0) { r.grip.pos = frozenAim.pos + V3{0.25f * k, 0, 0}; r.aim.pos = r.grip.pos; }

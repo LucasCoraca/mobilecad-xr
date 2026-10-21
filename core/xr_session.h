@@ -59,7 +59,15 @@ private:
     XrSpace appSpace = XR_NULL_HANDLE, viewSpace = XR_NULL_HANDLE;
     XrSessionState state = XR_SESSION_STATE_UNKNOWN; bool sessionRunning = false;
     bool stage = false;              // floor-level tracking space
-    struct Eye { XrSwapchain swapchain = XR_NULL_HANDLE; std::vector<GLuint> images; GLuint depth = 0, fbo = 0; int w = 0, h = 0; };
+    // passthrough (XR_FB_passthrough, Quest): a camera layer under the app's image, which is cleared to transparent
+    XrPassthroughFB passthrough = XR_NULL_HANDLE; XrPassthroughLayerFB passthroughLayer = XR_NULL_HANDLE; bool passthroughOn = false;
+    PFN_xrPassthroughStartFB ptStart = nullptr; PFN_xrPassthroughPauseFB ptPause = nullptr;
+    void makePassthrough(bool enabled);
+    /** One eye: its swapchain images, a framebuffer and a depth buffer. Rendered with 4x multisampling: on Android through
+     *  GL_EXT_multisampled_render_to_texture (resolved on chip, free on tiled GPUs like the Quest's), on desktop into
+     *  multisampled buffers (msFbo) blitted to the image. */
+    struct Eye { XrSwapchain swapchain = XR_NULL_HANDLE; std::vector<GLuint> images; GLuint depth = 0, fbo = 0, msColor = 0, msFbo = 0; int w = 0, h = 0; };
+    int samples = 1;
     Eye eyes[2]; int64_t colorFormat = 0; bool srgb = false;
     XrActionSet actionSet = XR_NULL_HANDLE;
     XrAction aAim = XR_NULL_HANDLE, aGrip = XR_NULL_HANDLE, aSelect = XR_NULL_HANDLE, aSqueeze = XR_NULL_HANDLE, aStick = XR_NULL_HANDLE, aMenu = XR_NULL_HANDLE, aContext = XR_NULL_HANDLE;

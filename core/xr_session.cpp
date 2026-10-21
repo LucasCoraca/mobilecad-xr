@@ -11,6 +11,14 @@
 
 namespace mcxr {
 
+#ifdef __ANDROID__
+// GL_EXT_multisampled_render_to_texture
+typedef void (*FbTex2DMsFn)(GLenum, GLenum, GLenum, GLuint, GLint, GLsizei);
+typedef void (*RbStorageMsFn)(GLenum, GLsizei, GLenum, GLsizei, GLsizei);
+static FbTex2DMsFn fbTex2DMs = nullptr; static RbStorageMsFn rbStorageMs = nullptr;
+#endif
+static const int kSamples = 4;
+
 #define XRCHECK(call) do { XrResult r_ = (call); if (XR_FAILED(r_)) { char s_[XR_MAX_RESULT_STRING_SIZE] = "?"; \
     if (instance) xrResultToString(instance, r_, s_); LOG("%s failed: %s (%d)", #call, s_, (int)r_); return false; } } while (0)
 
@@ -37,6 +45,8 @@ bool Headset::create(const PlatformInit& p, const char* appName, std::string* er
     xrEnumerateInstanceExtensionProperties(nullptr, n, &n, exts.data());
     if (!hasExtension(exts, gfxExt)) return fail("The OpenXR runtime has no OpenGL support");
     std::vector<const char*> enable{gfxExt};
+    bool ptExt = hasExtension(exts, XR_FB_PASSTHROUGH_EXTENSION_NAME);
+    if (ptExt) enable.push_back(XR_FB_PASSTHROUGH_EXTENSION_NAME);
 #ifdef __ANDROID__
     if (hasExtension(exts, XR_KHR_ANDROID_CREATE_INSTANCE_EXTENSION_NAME)) enable.push_back(XR_KHR_ANDROID_CREATE_INSTANCE_EXTENSION_NAME);
     XrInstanceCreateInfoAndroidKHR android{XR_TYPE_INSTANCE_CREATE_INFO_ANDROID_KHR}; android.applicationVM = p.vm; android.applicationActivity = p.activity;
@@ -82,12 +92,29 @@ bool Headset::create(const PlatformInit& p, const char* appName, std::string* er
     XrReferenceSpaceCreateInfo rs{XR_TYPE_REFERENCE_SPACE_CREATE_INFO}; rs.poseInReferenceSpace.orientation.w = 1;
     stage = type == XR_REFERENCE_SPACE_TYPE_STAGE;
     rs.referenceSpaceType = type; if (XR_FAILED(xrCreateReferenceSpace(session, &rs, &appSpace))) return fail("No tracking space");
+    makePassthrough(ptExt);
     rs.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_VIEW; xrCreateReferenceSpace(session, &rs, &viewSpace);
     if (!makeSwapchains()) return fail("Could not create the eye images");
     if (!makeActions()) return fail("Could not set up the controllers");
     LOG("runtime %s, system %s, %dx%d per eye, %s space", runtimeName.c_str(), systemName.c_str(), eyes[0].w, eyes[0].h,
         type == XR_REFERENCE_SPACE_TYPE_STAGE ? "stage" : "local");
     return true;
+}
+
+void Headset::makePassthrough(bool enabled) {
+    if (!enabled) return;
+    PFN_xrCreatePassthroughFB create = nullptr; PFN_xrCreatePassthroughLayerFB createLayer = nullptr;
+    xrGetInstanceProcAddr(instance, "xrCreatePassthroughFB", (PFN_xrVoidFunction*)&create);
+    xrGetInstanceProcAddr(instance, "xrCreatePassthroughLayerFB", (PFN_xrVoidFunction*)&createLayer);
+    xrGetInstanceProcAddr(instance, "xrPassthroughStartFB", (PFN_xrVoidFunction*)&ptStart);
+    xrGetInstanceProcAddr(instance, "xrPassthroughPauseFB", (PFN_xrVoidFunction*)&ptPause);
+    if (!create || !createLayer || !ptStart || !ptPause) return;
+    XrPassthroughCreateInfoFB pc{XR_TYPE_PASSTHROUGH_CREATE_INFO_FB}; pc.flags = XR_PASSTHROUGH_IS_RUNNING_AT_CREATION_BIT_FB;
+    if (XR_FAILED(create(session, &pc, &passthrough))) { passthrough = XR_NULL_HANDLE; LOG("passthrough: not available"); return; }
+    XrPassthroughLayerCreateInfoFB lc{XR_TYPE_PASSTHROUGH_LAYER_CREATE_INFO_FB};
+    lc.passthrough = passthrough; lc.flags = XR_PASSTHROUGH_IS_RUNNING_AT_CREATION_BIT_FB; lc.purpose = XR_PASSTHROUGH_LAYER_PURPOSE_RECONSTRUCTION_FB;
+    if (XR_FAILED(createLayer(session, &lc, &passthroughLayer))) { passthroughLayer = XR_NULL_HANDLE; LOG("passthrough: no layer"); return; }
+    passthroughOn = true; LOG("passthrough: ready");
 }
 
 bool Headset::makeSwapchains() {
@@ -101,6 +128,17 @@ bool Headset::makeSwapchains() {
     for (int64_t want : {(int64_t)GL_SRGB8_ALPHA8, (int64_t)GL_RGBA8})
         for (int64_t f : fmts) if (!colorFormat && f == want) { colorFormat = f; srgb = (f == GL_SRGB8_ALPHA8); }
     if (!colorFormat && nf) colorFormat = fmts[0];
+#ifdef __ANDROID__
+    const char* glExt = (const char*)glGetString(GL_EXTENSIONS);
+    if (glExt && std::strstr(glExt, "GL_EXT_multisampled_render_to_texture")) {
+        fbTex2DMs = (FbTex2DMsFn)eglGetProcAddress("glFramebufferTexture2DMultisampleEXT");
+        rbStorageMs = (RbStorageMsFn)eglGetProcAddress("glRenderbufferStorageMultisampleEXT");
+    }
+    samples = fbTex2DMs && rbStorageMs ? kSamples : 1;
+#else
+    samples = kSamples;
+#endif
+    LOG("eye images: %d samples", samples);
     for (int e = 0; e < 2; ++e) {
         Eye& eye = eyes[e]; eye.w = (int)views[e].recommendedImageRectWidth; eye.h = (int)views[e].recommendedImageRectHeight;
         XrSwapchainCreateInfo sc{XR_TYPE_SWAPCHAIN_CREATE_INFO};
@@ -116,7 +154,18 @@ bool Headset::makeSwapchains() {
         XRCHECK(xrEnumerateSwapchainImages(eye.swapchain, ni, &ni, (XrSwapchainImageBaseHeader*)imgs.data()));
         for (auto& i : imgs) eye.images.push_back(i.image);
         glGenRenderbuffers(1, &eye.depth); glBindRenderbuffer(GL_RENDERBUFFER, eye.depth);
-        glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, eye.w, eye.h);
+#ifdef __ANDROID__
+        if (samples > 1) rbStorageMs(GL_RENDERBUFFER, samples, GL_DEPTH_COMPONENT24, eye.w, eye.h);
+        else glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, eye.w, eye.h);
+#else
+        glRenderbufferStorageMultisample(GL_RENDERBUFFER, samples, GL_DEPTH_COMPONENT24, eye.w, eye.h);
+        glGenRenderbuffers(1, &eye.msColor); glBindRenderbuffer(GL_RENDERBUFFER, eye.msColor);
+        glRenderbufferStorageMultisample(GL_RENDERBUFFER, samples, srgb ? GL_SRGB8_ALPHA8 : GL_RGBA8, eye.w, eye.h);
+        glGenFramebuffers(1, &eye.msFbo); glBindFramebuffer(GL_FRAMEBUFFER, eye.msFbo);
+        glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, eye.msColor);
+        glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, eye.depth);
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+#endif
         glGenFramebuffers(1, &eye.fbo);
     }
     eyeW = eyes[0].w; eyeH = eyes[0].h;
@@ -258,6 +307,11 @@ bool Headset::frame(Interaction& ia, Renderer& r) {
         if (!firstTime) firstTime = fs.predictedDisplayTime;
         if (inputOverride) inputOverride(hin, head, (fs.predictedDisplayTime - firstTime) * 1e-9);
         ia.floorY = stage ? 0.f : -1.5f;                                 // local space: origin at the head, floor ~1.5 m below
+        ia.passthroughAvailable = passthroughLayer != XR_NULL_HANDLE;
+        if (ia.passthroughAvailable && ia.passthrough != passthroughOn) {          // the badge switched it: run the cameras only when shown
+            if (ia.passthrough) ptStart(passthrough); else ptPause(passthrough);
+            passthroughOn = ia.passthrough;
+        }
         ia.update(hin, dt);
 
         XrViewLocateInfo li{XR_TYPE_VIEW_LOCATE_INFO}; li.viewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
@@ -274,13 +328,27 @@ bool Headset::frame(Interaction& ia, Renderer& r) {
                 XrSwapchainImageAcquireInfo ai{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO}; xrAcquireSwapchainImage(eye.swapchain, &ai, &idx);
                 XrSwapchainImageWaitInfo wti{XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO}; wti.timeout = XR_INFINITE_DURATION; xrWaitSwapchainImage(eye.swapchain, &wti);
                 glBindFramebuffer(GL_FRAMEBUFFER, eye.fbo);
-                glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, eye.images[idx], 0);
+#ifdef __ANDROID__
+                if (samples > 1) fbTex2DMs(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, eye.images[idx], 0, samples);
+                else glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, eye.images[idx], 0);
                 glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, eye.depth);
+                GLuint target = eye.fbo;
+#else
+                glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, eye.images[idx], 0);
+                GLuint target = eye.msFbo;
+#endif
                 Pose ep = toPose(views[e].pose);
                 M4 proj = projectionFov(views[e].fov.angleLeft, views[e].fov.angleRight, views[e].fov.angleUp, views[e].fov.angleDown, 0.02f, 50.f);
                 M4 vp = mul(proj, viewFrom(ep));
-                r.beginView(eye.fbo, 0, 0, eye.w, eye.h, true);
+                r.beginView(target, 0, 0, eye.w, eye.h, true);
                 ia.render(r, vp, ep.pos);
+#ifdef __ANDROID__
+                // the depth buffer need not be written back to memory
+                const GLenum discard[] = {GL_DEPTH_ATTACHMENT}; glInvalidateFramebuffer(GL_FRAMEBUFFER, 1, discard);
+#else
+                glBindFramebuffer(GL_READ_FRAMEBUFFER, eye.msFbo); glBindFramebuffer(GL_DRAW_FRAMEBUFFER, eye.fbo);
+                glBlitFramebuffer(0, 0, eye.w, eye.h, 0, 0, eye.w, eye.h, GL_COLOR_BUFFER_BIT, GL_NEAREST);
+#endif
                 glBindFramebuffer(GL_FRAMEBUFFER, 0);
                 if (e == 0) mirrorTex = eye.images[idx];
                 XrSwapchainImageReleaseInfo ri{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO}; xrReleaseSwapchainImage(eye.swapchain, &ri);
@@ -293,15 +361,25 @@ bool Headset::frame(Interaction& ia, Renderer& r) {
             layer.space = appSpace; layer.viewCount = 2; layer.views = pv; rendered = true;
         }
     }
-    const XrCompositionLayerBaseHeader* layers[] = {(XrCompositionLayerBaseHeader*)&layer};
+    // passthrough: the camera layer first, the app's image over it, blended by its alpha (premultiplied)
+    XrCompositionLayerPassthroughFB ptl{XR_TYPE_COMPOSITION_LAYER_PASSTHROUGH_FB}; ptl.layerHandle = passthroughLayer;
+    bool room = passthroughLayer && ia.passthrough;
+    if (room) layer.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
+    std::vector<const XrCompositionLayerBaseHeader*> layers;
+    if (room) layers.push_back((XrCompositionLayerBaseHeader*)&ptl);
+    if (rendered) layers.push_back((XrCompositionLayerBaseHeader*)&layer);
     XrFrameEndInfo ei{XR_TYPE_FRAME_END_INFO}; ei.displayTime = fs.predictedDisplayTime;
-    ei.environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE; ei.layerCount = rendered ? 1 : 0; ei.layers = layers;
+    ei.environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE; ei.layerCount = (uint32_t)layers.size(); ei.layers = layers.data();
     xrEndFrame(session, &ei);
     return rendered;
 }
 
 void Headset::destroy() {
-    for (Eye& e : eyes) { if (e.swapchain) xrDestroySwapchain(e.swapchain); e.swapchain = XR_NULL_HANDLE; }
+    for (Eye& e : eyes) {
+        if (e.swapchain) xrDestroySwapchain(e.swapchain); e.swapchain = XR_NULL_HANDLE;
+        if (e.msFbo) glDeleteFramebuffers(1, &e.msFbo); if (e.msColor) glDeleteRenderbuffers(1, &e.msColor); e.msFbo = e.msColor = 0;
+    }
+    passthroughLayer = XR_NULL_HANDLE; passthrough = XR_NULL_HANDLE; passthroughOn = false;   // (destroyed with the session)
     for (int i = 0; i < 2; ++i) { if (aimSpace[i]) xrDestroySpace(aimSpace[i]); if (gripSpace[i]) xrDestroySpace(gripSpace[i]); aimSpace[i] = gripSpace[i] = XR_NULL_HANDLE; }
     if (appSpace) xrDestroySpace(appSpace); if (viewSpace) xrDestroySpace(viewSpace); appSpace = viewSpace = XR_NULL_HANDLE;
     if (actionSet) xrDestroyActionSet(actionSet); actionSet = XR_NULL_HANDLE;

@@ -2,4 +2,6 @@
 <!-- Headset build (Quest 3): head tracking is required (Meta store / VRC.Quest.Packaging); the x86 emulator build omits it. -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-feature android:name="android.hardware.vr.headtracking" android:required="true" android:version="1" />
+    <!-- passthrough: the room behind the model (XR_FB_passthrough) -->
+    <uses-feature android:name="com.oculus.feature.PASSTHROUGH" android:required="false" />
 </manifest>

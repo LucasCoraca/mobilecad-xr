@@ -51,6 +51,7 @@ struct Panel {
     float width = 1.0f, height = 0.625f;
     int pxW = 1600, pxH = 1000; // texture / touch coordinate space
     GLuint tex = 0; bool external = false;
+    GLuint sharp = 0;           // with sheets: a mipmapped copy of the image, what the sheets show (sharper, no shimmer)
     std::vector<Sheet> sheets; bool seeThrough = false; int badgeSheet = -1;   // the scale badge hangs under this sheet
     /** Windows over the UI (menus, popups, dialogs: x y w h px, bottom to top). Each is shown whole, on the plane of the
      *  sheet it mostly covers and a little in front of it, and is left out of the other sheets: a menu dropping from the
@@ -81,9 +82,12 @@ public:
     bool trueScale = false;
     void setTrueScale(bool on);
     float floorY = 0;            // world height of the floor (0 in stage space)
+    /** Passthrough (the headset's cameras: your room behind the model and the UI). `passthroughAvailable` is set by the
+     *  session; the badge's PASSTHROUGH button switches `passthrough`. */
+    bool passthroughAvailable = false, passthrough = true;
     /** "1:1", "1:4.2", "3:1": world size : real size. */
     std::string scaleText() const;
-    /** Centre of the scale badge's button (world), for scripted tests. */
+    /** Centre of the scale badge's TRUE SIZE / FIT VIEW button (world), for scripted tests. */
     V3 badgeButton() const;
     // ---- the app's 3D view (see the top)
     std::function<void(int action, V3 o, V3 d, float depthMm)> onViewport;   // 0 press 1 drag 2 release 3 hover 4 leave; model mm
@@ -95,6 +99,10 @@ public:
     struct Overlay { std::vector<float> lines, dots; std::vector<std::pair<V3, std::string>> labels; } overlay;
     /** The sketch being edited, drawn by the app into a texture lying on the sketch plane: corners TL TR BR BL (model mm). */
     GLuint sketchTex = 0; bool sketchVisible = false; V3 sketchCorners[4];
+    /** Its text labels (constraint glyphs, dimensions, sizes while drawing, snap hints), facing the viewer at a constant
+     *  angular size: point (model mm), box centre offset and size (dp, y down), cell in sketchLabelTex (premultiplied). */
+    struct SketchLabel { V3 at; float cx, cy, w, h; float uv[4]; };
+    std::vector<SketchLabel> sketchLabels; GLuint sketchLabelTex = 0;
     /** The build plate (see the top). Its radius (model mm) covers the model and is at least 15 cm in the room. */
     bool plate = true;
     float plateRadius() const;
@@ -113,6 +121,8 @@ public:
     void render(Renderer& r, const M4& viewProj, V3 eye);
     /** Reads the panel image's alpha for hit testing (call when the image changed, at most a few times a second). */
     void updateMask(Renderer& r);
+    /** The panel image changed: refresh its mipmapped copy (with sheets). */
+    void panelChanged(Renderer& r);
     Pose sheetPose(const Sheet& s) const { return compose(Pose{panel.pose.pos, panel.pose.rot, 1}, s.local); }
 
 private:
@@ -126,7 +136,8 @@ private:
     Pose fitPose; bool fitSaved = false;
     bool placedEmpty = false; Pose placeHead;  // placed before the document had a shape: size it again when it gets one      // the pose to return to when true size is switched off
     V3 viewer{0, 1.6f, 0};
-    bool triggerOnBadge[2] = {false, false}, badgeHot = false;
+    bool triggerOnBadge[2] = {false, false}; int badgeHot = -1;    // the badge button pointed at (0 true size, 1 passthrough)
+    int badgeButtonAt(float u) const;
     int viewHand = -1; bool viewHover = false; bool prevStick[2] = {false, false};
     std::map<std::string, std::pair<GLuint, std::pair<int, int>>> labelTex;
     void modelRay(const Pose& aim, V3* o, V3* d) const;
@@ -135,7 +146,7 @@ private:
     Pose badgePose() const;
     float lowestY() const;
     struct Target { bool panel = false, badge = false, rim = false; float t = 1e30f; float px = 0, py = 0; int sheet = -1; ElemRef elem; V3 point; };
-    GLuint plateTex = 0; std::string plateDrawn; bool rimHot = false;
+    std::map<int, GLuint> plateTexs; bool rimHot = false;    // plate textures by cell count (and highlight)
     Pose platePose() const;
     bool rimRay(const Pose& aim, float* t) const;
     Target target[2];

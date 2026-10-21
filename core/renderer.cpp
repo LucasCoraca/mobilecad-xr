@@ -116,7 +116,9 @@ void Renderer::beginView(GLuint fbo, int x, int y, int w, int h, bool doClear) {
     glEnable(GL_DEPTH_TEST); glDepthFunc(GL_LEQUAL); glDisable(GL_CULL_FACE);
     if (doClear) {
         glEnable(GL_SCISSOR_TEST); glScissor(x, y, w, h);
-        glClearColor(std::pow(clear[0], gamma), std::pow(clear[1], gamma), std::pow(clear[2], gamma), 1); glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        if (seeThrough) glClearColor(0, 0, 0, 0);                    // nothing drawn = the room (premultiplied: rgb 0)
+        else glClearColor(std::pow(clear[0], gamma), std::pow(clear[1], gamma), std::pow(clear[2], gamma), 1);
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
         glDisable(GL_SCISSOR_TEST);
     }
 }
@@ -134,7 +136,7 @@ void Renderer::drawScene(const Scene& s, const Pose& model, const M4& vp, V3 eye
     glEnable(GL_POLYGON_OFFSET_FILL); glPolygonOffset(1.f, 2.f);
     // opaque meshes first, then the see-through ones, blended over them without hiding what is behind
     for (int pass = 0; pass < 2; ++pass) {
-        if (pass == 1) { glEnable(GL_BLEND); glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA); glDepthMask(GL_FALSE); }
+        if (pass == 1) { glEnable(GL_BLEND); glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA); glDepthMask(GL_FALSE); }
         for (size_t i = 0; i < s.meshes.size(); ++i) {
             const Mesh& m = s.meshes[i]; if (!m.triVerts()) continue;
             float a = m.alpha * fade; if ((a < 0.999f) != (pass == 1)) continue;
@@ -149,12 +151,14 @@ void Renderer::drawScene(const Scene& s, const Pose& model, const M4& vp, V3 eye
     }
     glDepthMask(GL_TRUE);
     glDisable(GL_POLYGON_OFFSET_FILL);
-    if (fade < 0.999f) { glEnable(GL_BLEND); glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA); } else glDisable(GL_BLEND);
+    if (fade < 0.999f) { glEnable(GL_BLEND); glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA); } else glDisable(GL_BLEND);
     glUniform1f(uLit, 0.f); glVertexAttrib3f(1, 0.f, 0.f, 1.f);                       // edges carry no normals
     for (size_t i = 0; i < s.meshes.size(); ++i) {
         const Mesh& m = s.meshes[i]; if (!m.edgeSegments()) continue;
         glBindVertexArray(m.evao);
-        glUniform4f(uColor, 0.17f, 0.21f, 0.25f, fade); glLineWidth(1.f);
+        // a solid's edges dark on its faces; a wire alone (Draft line, sketch) light, to stand out in the room
+        if (m.triVerts()) glUniform4f(uColor, 0.17f, 0.21f, 0.25f, fade); else glUniform4f(uColor, 0.86f, 0.90f, 0.95f, fade);
+        glLineWidth(m.triVerts() ? 1.f : 2.f);
         glDrawArrays(GL_LINES, 0, (GLsizei)(m.edgeSegments() * 2));
         auto edge = [&](int id, V3 col) {
             if (id <= 0 || id >= (int)m.edgeFirst.size() || m.edgeFirst[id] < 0) return;
@@ -188,7 +192,8 @@ void Renderer::drawDots(const std::vector<float>& pts, float sizePx, const M4& v
     glBindVertexArray(0);
 }
 
-void Renderer::drawPanel(GLuint tex, bool external, const Pose& c, float w, float h, float radius, const M4& vp, float dim, const float* uv, bool alpha) {
+void Renderer::drawPanel(GLuint tex, bool external, const Pose& c, float w, float h, float radius, const M4& vp, float dim, const float* uv, bool alpha,
+                         bool premultiplied) {
     if (!tex || (external && !oesProg)) return;
     M4 m = fromPose(c); for (int k = 0; k < 3; ++k) { m.m[k] *= w; m.m[4 + k] *= h; }
     M4 mvp = mul(vp, m);
@@ -203,8 +208,10 @@ void Renderer::drawPanel(GLuint tex, bool external, const Pose& c, float w, floa
     if (nh) glUniform4fv(glGetUniformLocation(prog, "uHole"), nh, holes.data());
     glActiveTexture(GL_TEXTURE0); glBindTexture(target, tex);
     glEnable(GL_BLEND);
-    // an external image with alpha is a composited window surface: premultiplied
-    if (external && alpha) glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA); else glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    // an external image with alpha is a composited window surface: premultiplied (and so is a copy of one)
+    // (alpha: ONE, 1 - a, so the image's alpha is the coverage: what passthrough shows through)
+    if (alpha && (external || premultiplied)) glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+    else glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
     glBindVertexArray(quadVao); glDrawArrays(GL_TRIANGLES, 0, 6); glBindVertexArray(0);
     glDisable(GL_BLEND);
 }
@@ -232,12 +239,42 @@ void Renderer::readAlpha(GLuint tex, bool external, int w, int h, std::vector<ui
     glBindFramebuffer(GL_FRAMEBUFFER, prevFbo); glViewport(view[0], view[1], view[2], view[3]); glEnable(GL_DEPTH_TEST);
 }
 
+/** Trilinear, and anisotropic where the GPU has it: text on a surface seen at an angle stays sharp without shimmering. */
+static void smoothFiltering(GLenum target) {
+    glTexParameteri(target, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR); glTexParameteri(target, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(target, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE); glTexParameteri(target, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    static float maxAniso = -1;
+    if (maxAniso < 0) { maxAniso = 0; glGetFloatv(0x84FF /* MAX_TEXTURE_MAX_ANISOTROPY */, &maxAniso); if (glGetError() != GL_NO_ERROR) maxAniso = 0; }
+    if (maxAniso > 1) glTexParameterf(target, 0x84FE /* TEXTURE_MAX_ANISOTROPY */, std::min(maxAniso, 8.f));
+}
+
 GLuint Renderer::makeTexture(int w, int h, const void* rgba, GLuint reuse) {
     GLuint t = reuse; if (!t) glGenTextures(1, &t);
     glBindTexture(GL_TEXTURE_2D, t);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR); glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE); glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba);
+    glGenerateMipmap(GL_TEXTURE_2D); smoothFiltering(GL_TEXTURE_2D);
+    return t;
+}
+
+GLuint Renderer::mipmappedCopy(GLuint src, bool external, int w, int h, GLuint reuse) {
+    if (!src || (external && !oesProg)) return reuse;
+    GLuint t = reuse;
+    if (!t || copyW != w || copyH != h) {
+        if (t) glDeleteTextures(1, &t);
+        glGenTextures(1, &t); glBindTexture(GL_TEXTURE_2D, t);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr); smoothFiltering(GL_TEXTURE_2D);
+        if (!copyFbo) glGenFramebuffers(1, &copyFbo);
+        copyW = w; copyH = h;
+    }
+    GLint prevFbo = 0, view[4]; glGetIntegerv(GL_FRAMEBUFFER_BINDING, &prevFbo); glGetIntegerv(GL_VIEWPORT, view);
+    glBindFramebuffer(GL_FRAMEBUFFER, copyFbo); glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, t, 0);
+    glViewport(0, 0, w, h); glClearColor(0, 0, 0, 0); glClear(GL_COLOR_BUFFER_BIT); glDisable(GL_DEPTH_TEST);
+    M4 ortho{}; ortho.m[0] = 2; ortho.m[5] = -2; ortho.m[10] = 1; ortho.m[15] = 1;        // texel row 0 = image top, as uploaded textures
+    float g = gamma; gamma = 1;
+    drawPanel(src, external, Pose{V3{}, Q{}, 1}, 1, 1, 0, ortho, 1, nullptr, true);
+    gamma = g;
+    glBindTexture(GL_TEXTURE_2D, t); glGenerateMipmap(GL_TEXTURE_2D);
+    glBindFramebuffer(GL_FRAMEBUFFER, prevFbo); glViewport(view[0], view[1], view[2], view[3]); glEnable(GL_DEPTH_TEST);
     return t;
 }
 

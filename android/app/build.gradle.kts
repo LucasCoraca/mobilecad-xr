@@ -16,7 +16,7 @@ android {
         minSdk = 32                      // Meta Horizon OS store guidance: min 32, target 34
         targetSdk = 34
         versionCode = ((System.currentTimeMillis() / 60000L) - 29454720L).toInt()
-        versionName = "0.6"
+        versionName = "0.7"
         externalNativeBuild { cmake { arguments += listOf("-DANDROID_STL=c++_shared", "-DMOBILECAD_DIR=" + mobilecad.absolutePath) } }
     }
     ndkVersion = "29.0.14206865"
@@ -41,6 +41,8 @@ android {
     }
     buildTypes { getByName("release") { isMinifyEnabled = false; signingConfigs.findByName("release")?.let { signingConfig = it } } }
     packaging { jniLibs { pickFirsts += "**/libc++_shared.so"; useLegacyPackaging = true } }
+    // the engine's Python (the mobilecad bridge, shims, vendored modules) always from the submodule: the staged runtime in
+    // src/<flavor>/assets only provides the native parts, which change rarely (engine/package_runtime.py stages both)
     // aapt's default pattern drops asset directories starting with "_" (zipfile/_path, _pyrepl, Python packages ...)
     androidResources { ignoreAssetsPattern = "!.svn:!.git:!.ds_store:!*.scc:!CVS:!thumbs.db:!picasa.ini:!*~" }
     compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
@@ -59,3 +61,17 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
     implementation(files(mobilecad.resolve("app/app/libs/Qt6Android.jar")))
 }
+
+// see the comment in android {}: refresh the bridge Python in each flavor's staged runtime before its assets are merged
+val syncEnginePython = tasks.register("syncEnginePython") {
+    doLast {
+        for (abi in listOf("arm64", "x86")) {
+            val bridge = file("src/$abi/assets/freecad-runtime/bridge")
+            if (!bridge.exists()) continue
+            delete(bridge.resolve("mobilecad"))
+            copy { from(mobilecad.resolve("engine/python/mobilecad")); into(bridge.resolve("mobilecad")); exclude("**/__pycache__/**") }
+            for (d in listOf("shims", "vendor")) copy { from(mobilecad.resolve("engine/python/$d")); into(bridge); exclude("**/__pycache__/**") }
+        }
+    }
+}
+tasks.named("preBuild") { dependsOn(syncEnginePython) }

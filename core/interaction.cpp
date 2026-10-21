@@ -8,7 +8,8 @@ namespace mcxr {
 static V3 forward(const Pose& p) { return rotate(p.rot, V3{0, 0, -1}); }
 static Pose unscaled(const Pose& p) { return Pose{p.pos, p.rot, 1}; }
 static const float kTrueScale = 0.001f;              // scene mm -> world m
-static const float kBadgeW = 0.42f, kBadgeH = 0.06f; static const int kBadgePx = 2000;   // badge size (m), pixels per metre
+static const float kBadgeW = 0.58f, kBadgeH = 0.06f; static const int kBadgePx = 2000;   // badge size (m), pixels per metre
+static const int kSizeBtnW = 280, kRoomBtnW = 316;                                // its buttons (px), from the right: size, room
 static Q facing(V3 from, V3 to) {                      // yaw-only rotation whose +Z points from `to` back to `from`
     V3 d = from - to; d.y = 0; if (len(d) < 1e-4f) d = {0, 0, 1};
     d = norm(d); return axisAngle({0, 1, 0}, std::atan2(d.x, d.z));
@@ -64,7 +65,8 @@ float Interaction::plateRadius() const {
     float rxy = 0;
     if (!scene.empty()) for (int k = 0; k < 4; ++k)
         rxy = std::max(rxy, std::hypot(k & 1 ? scene.max.x : scene.min.x, k & 2 ? scene.max.y : scene.min.y));
-    float r = std::max(rxy * 1.15f, 0.15f / std::max(model.scale, 1e-9f));
+    // 15 to 30 cm in the room: a parts table, not a floor (a part reaching past it overhangs; it stays clear of the bars)
+    float sc = std::max(model.scale, 1e-9f), r = std::max(std::min(rxy * 1.15f, 0.30f / sc), 0.15f / sc);
     float g = 1; while (g * 10 < r / 8) g *= 10;                     // round up to whole grid cells (a stable size)
     float step = r / 8 <= g ? g : r / 8 <= 2 * g ? 2 * g : r / 8 <= 5 * g ? 5 * g : 10 * g;
     return std::ceil(r / step) * step;
@@ -84,7 +86,8 @@ bool Interaction::rimRay(const Pose& aim, float* t) const {
     float rw = plateRadius() * model.scale, u, v;
     if (!rectRay(aim, platePose(), 2 * rw, 2 * rw, t, &u, &v, false)) return false;
     float r = std::hypot(u - 0.5f, v - 0.5f) * 2 * rw;
-    return r <= rw && r >= rw - std::max(0.025f, 0.1f * rw);          // the outer band, at least 2.5 cm wide
+    float band = std::max(0.1f * rw, 0.6f * plateGrid() * model.scale);   // as drawn; the handle is at least 2.5 cm wide
+    return r <= rw && r >= rw - std::max(0.025f, band);
 }
 
 float Interaction::lowestY() const {
@@ -129,7 +132,14 @@ Pose Interaction::badgePose() const {                                  // hangs 
     return p;
 }
 
-V3 Interaction::badgeButton() const { return apply(badgePose(), V3{kBadgeW / 2 - 0.078f, 0, 0}); }
+V3 Interaction::badgeButton() const { return apply(badgePose(), V3{kBadgeW / 2 - (16 + kSizeBtnW / 2.f) / kBadgePx, 0, 0}); }
+
+int Interaction::badgeButtonAt(float u) const {
+    float x = u * kBadgeW * kBadgePx, W = kBadgeW * kBadgePx;
+    if (x >= W - 16 - kSizeBtnW && x <= W - 16) return 0;
+    if (passthroughAvailable && x >= W - 32 - kSizeBtnW - kRoomBtnW && x <= W - 32 - kSizeBtnW) return 1;
+    return -1;
+}
 
 void Interaction::placePanel(const Pose& head) {
     V3 f = forward(head); f.y = 0; f = len(f) > 1e-3f ? norm(f) : V3{0, 0, -1};
@@ -193,6 +203,10 @@ bool Interaction::panelRay(const Pose& aim, float* t, float* px, float* py, bool
     return hit;
 }
 
+void Interaction::panelChanged(Renderer& r) {
+    if (!panel.sheets.empty() && panel.tex) panel.sharp = r.mipmappedCopy(panel.tex, panel.external, panel.pxW, panel.pxH, panel.sharp);
+}
+
 void Interaction::updateMask(Renderer& r) {
     if (!panel.seeThrough || !panel.tex) return;
     panel.maskW = panel.pxW / Panel::maskScale; panel.maskH = panel.pxH / Panel::maskScale;
@@ -218,7 +232,7 @@ Interaction::Target Interaction::aimAt(const Pose& aim) const {
     int sh = -1;
     // the UI's surfaces are drawn over the model, so what is on them wins wherever the ray meets them
     if (panelRay(aim, &t, &px, &py, false, &sh) && (t < out.t || panel.seeThrough)) { out = {}; out.panel = true; out.t = t; out.px = px; out.py = py; out.sheet = sh; }
-    if (badgeRay(aim, &t, &px) && t < out.t) { out = {}; out.badge = true; out.t = t; }
+    if (badgeRay(aim, &t, &px) && t < out.t) { out = {}; out.badge = true; out.t = t; out.px = px; }
     if (!out.panel && !out.badge && rimRay(aim, &t) && t < out.t) { out = {}; out.rim = true; out.t = t; }
     return out;
 }
@@ -321,12 +335,18 @@ void Interaction::update(const HandInput hands[2], float dt) {
             }
             triggerOnModel[i] = false;
         }
-        if (!trig[i] && prevTrig[i] && triggerOnBadge[i]) { if (target[i].badge) setTrueScale(!trueScale); triggerOnBadge[i] = false; }
+        if (!trig[i] && prevTrig[i] && triggerOnBadge[i]) {
+            int b = target[i].badge ? badgeButtonAt(target[i].px) : -1;
+            if (b == 0) setTrueScale(!trueScale); else if (b == 1) passthrough = !passthrough;
+            triggerOnBadge[i] = false;
+        }
         prevTrig[i] = trig[i]; prevSqueeze[i] = squeeze[i];
         // thumbstick, when not scrolling the panel: scale and turn the model about its centre
         if (h.active && !target[i].panel && !target[i].badge && (std::fabs(h.stickX) > 0.2f || std::fabs(h.stickY) > 0.2f) && (!scene.empty() || plate)) {
             V3 c = apply(model, plate ? V3{} : scene.center());
-            float s = trueScale ? 1.f : std::exp(h.stickY * dt * 1.2f); Q turn = axisAngle({0, 1, 0}, -h.stickX * dt * 1.8f);
+            // eased: a light push zooms / turns slowly, a full one quickly
+            float sy = h.stickY * std::fabs(h.stickY), sx = h.stickX * std::fabs(h.stickX);
+            float s = trueScale ? 1.f : std::exp(sy * dt * 1.6f); Q turn = axisAngle({0, 1, 0}, -sx * dt * 2.0f);
             model.rot = qnorm(turn * model.rot); model.scale *= s; model.pos = c + rotate(turn, (model.pos - c) * s);
         }
     }
@@ -337,7 +357,7 @@ void Interaction::update(const HandInput hands[2], float dt) {
         float s = len(b - a) / twoDist; V3 nd = norm(dir);
         Q turn = axisAngle({0, 1, 0}, std::atan2(cross(twoDir, nd).y, dot(twoDir, nd)));
         if (trueScale) s = 1;
-        else if (std::fabs(std::log(twoModel.scale * s / kTrueScale)) < 0.05f) s = kTrueScale / twoModel.scale;   // snap to 1:1
+        else if (std::fabs(std::log(twoModel.scale * s / kTrueScale)) < 0.02f) s = kTrueScale / twoModel.scale;   // snap to 1:1
         model.rot = qnorm(turn * twoModel.rot); model.scale = twoModel.scale * s; model.pos = mid + rotate(turn, (twoModel.pos - twoMid) * s);
         triggerOnModel[0] = triggerOnModel[1] = false;                   // not a click
     } else {
@@ -369,7 +389,7 @@ void Interaction::update(const HandInput hands[2], float dt) {
             else model = compose(delta, grab[i].objStart);
         }
     }
-    badgeHot = target[0].badge || target[1].badge;
+    badgeHot = target[1].badge ? badgeButtonAt(target[1].px) : target[0].badge ? badgeButtonAt(target[0].px) : -1;
     rimHot = target[0].rim || target[1].rim || (grab[0].on && grab[0].plate) || (grab[1].on && grab[1].plate);
     last[0] = hands[0]; last[1] = hands[1];
 }
@@ -379,7 +399,9 @@ void Interaction::render(Renderer& r, const M4& vp, V3 eye) {
     r.upload(scene);
     Lines l; std::vector<float> dots;
     auto dot = [&](V3 p, V3 c) { dots.insert(dots.end(), {p.x, p.y, p.z, c.x, c.y, c.z}); };
-    for (int x = -10; x <= 10; ++x) {                                 // 4 m floor grid, 20 cm cells
+    bool room = passthroughAvailable && passthrough;               // the real room shows: no floor grid
+    r.seeThrough = room;
+    for (int x = -10; x <= 10 && !room; ++x) {                        // 4 m floor grid, 20 cm cells
         V3 c = (x == 0) ? V3{0.32f, 0.36f, 0.42f} : V3{0.22f, 0.25f, 0.29f};
         l.add({x * 0.2f, 0, -2}, {x * 0.2f, 0, 2}, c); l.add({-2, 0, x * 0.2f}, {2, 0, x * 0.2f}, c);
     }
@@ -398,28 +420,38 @@ void Interaction::render(Renderer& r, const M4& vp, V3 eye) {
     ElemRef hv = onViewport ? hostHover : hover[1].valid() ? hover[1] : hover[0];
     if (!scene.empty()) r.drawScene(scene, model, vp, eye, hv, selected, fade);
     if (plate) {
-        // the build plate: a see-through disc with a grid (bolder every 5 cells) and a rim, then the axes from the origin
-        float R = plateRadius(), g = plateGrid();
-        char key[64]; std::snprintf(key, sizeof key, "%g|%g|%d", R, g, (int)rimHot);
-        if (key != plateDrawn || !plateTex || !glIsTexture(plateTex)) {
-            const int N = 1024; Canvas c(N, N); float band = std::max(0.025f / model.scale, 0.1f * R), px = 2 * R / N;
+        // the build plate: a see-through disc with a grid (bolder every 5 cells) and a rim, then the axes from the origin.
+        // The texture depends only on how many cells reach the rim (and the rim's highlight), so zooming reuses a few.
+        float R = plateRadius(), g = plateGrid(); int cells = (int)std::lround(R / g);
+        int key = cells * 2 + (int)rimHot; GLuint& plateTex = plateTexs[key];
+        if (!plateTex || !glIsTexture(plateTex)) {
+            const int N = 512; Canvas c(N, N); float band = std::max(0.1f * cells, 0.6f), px = 2.f * cells / N;   // in cells
             for (int y = 0; y < N; ++y) for (int x = 0; x < N; ++x) {
-                float mx = (x + 0.5f) * px - R, my = R - (y + 0.5f) * px, rr = std::hypot(mx, my);
-                if (rr > R) continue;
+                float mx = (x + 0.5f) * px - cells, my = cells - (y + 0.5f) * px, rr = std::hypot(mx, my);
+                if (rr > cells) continue;
                 uint8_t* p = &c.px[(y * N + x) * 4];
                 auto set = [&](int r_, int g_, int b_, int a) { p[0] = r_; p[1] = g_; p[2] = b_; p[3] = a; };
-                if (rr > R - band) { if (rimHot) set(66, 133, 230, 210); else set(78, 88, 100, 190); continue; }
+                if (rr > cells - band) { if (rimHot) set(66, 133, 230, 210); else set(78, 88, 100, 190); continue; }
                 set(34, 39, 46, 120);
                 auto on = [&](float v, float step, float w) { float m = std::fabs(std::fmod(std::fabs(v) + step / 2, step) - step / 2); return m < w * px; };
-                if (on(mx, 5 * g, 1.6f) || on(my, 5 * g, 1.6f)) set(150, 160, 172, 190);
-                else if (on(mx, g, 0.9f) || on(my, g, 0.9f)) set(105, 115, 128, 160);
+                if (on(mx, 5, 1.2f) || on(my, 5, 1.2f)) set(150, 160, 172, 190);
+                else if (on(mx, 1, 0.7f) || on(my, 1, 0.7f)) set(105, 115, 128, 160);
             }
-            char lab[32]; std::snprintf(lab, sizeof lab, g < 1000 ? "GRID %g MM" : "GRID %g M", g < 1000 ? g : g / 1000);
-            int sc = 3; c.text((N - Canvas::textWidth(lab, sc)) / 2, N - (int)(band / px / 2) - 8 * sc, lab, sc, 235, 238, 242);
-            plateTex = r.makeTexture(N, N, c.px.data(), glIsTexture(plateTex) ? plateTex : 0); plateDrawn = key;
+            plateTex = r.makeTexture(N, N, c.px.data());
         }
         float w = 2 * R * model.scale;
         r.drawPanel(plateTex, false, platePose(), w, w, w / 2, vp);
+        {   // the grid spacing, lying on the rim nearest the viewer's side of the model (its -Y edge)
+            char lab[32]; std::snprintf(lab, sizeof lab, g < 1000 ? "GRID %g MM" : "GRID %g M", g < 1000 ? g : g / 1000);
+            auto it = labelTex.find(lab);
+            if (it == labelTex.end()) {
+                int W = Canvas::textWidth(lab, 2) + 16, H = 36; Canvas cv(W, H); cv.text(8, 2, lab, 2, 235, 238, 242);
+                it = labelTex.emplace(lab, std::make_pair(r.makeTexture(W, H, cv.px.data()), std::make_pair(W, H))).first;
+            }
+            float band = std::max(0.1f * cells, 0.6f) * g * model.scale, lh = band * 0.55f, lw = lh * it->second.second.first / it->second.second.second;
+            Pose lp = platePose(); lp.pos = lp.pos + rotate(model.rot, V3{0, -(R * model.scale - band / 2), 0.0005f});
+            r.drawPanel(it->second.first, false, lp, lw, lh, 0, vp);
+        }
         Lines ax;
         ax.add(apply(model, {0, 0, 0}), apply(model, {R, 0, 0}), {0.90f, 0.30f, 0.30f});
         ax.add(apply(model, {0, 0, 0}), apply(model, {0, R, 0}), {0.35f, 0.80f, 0.35f});
@@ -436,6 +468,12 @@ void Interaction::render(Renderer& r, const M4& vp, V3 eye) {
             V3 x = ax * (1 / w), y = norm(ay - x * mcxr::dot(ay, x)), z = cross(x, y);
             r.drawPanel(sketchTex, false, Pose{(c[0] + c[2]) * 0.5f, fromBasis(x, y, z), 1}, w, h, 0, vp);
         }
+    }
+    if (sketchVisible && sketchLabelTex) for (const SketchLabel& L : sketchLabels) {
+        // a dp is ~0.075 degrees: about 3x a phone's, readable at arm's length
+        V3 p = apply(model, L.at); float dist = std::max(len(eye - p), 0.05f), k = 0.0013f * dist;
+        V3 z = norm(eye - p), x = norm(cross(V3{0, 1, 0}, z)); if (len(x) < 0.5f) x = {1, 0, 0}; V3 y = cross(z, x);
+        r.drawPanel(sketchLabelTex, false, Pose{p + x * (L.cx * k) - y * (L.cy * k), fromBasis(x, y, z), 1}, L.w * k, L.h * k, 0, vp, 1, L.uv, true, true);
     }
     if (!overlay.lines.empty()) {
         Lines ol; const auto& v = overlay.lines;
@@ -471,7 +509,8 @@ void Interaction::render(Renderer& r, const M4& vp, V3 eye) {
         auto draw = [&](const Sheet& s) {
             // half a pixel in from the edges, so filtering does not bleed the neighbouring part of the image in
             float uv[4] = {(s.x + 0.5f) / panel.pxW, (s.y + 0.5f) / panel.pxH, (s.w - 1) / panel.pxW, (s.h - 1) / panel.pxH};
-            r.drawPanel(panel.tex, panel.external, sheetPose(s), s.w / s.pxPerM, s.h / s.pxPerM, 0, vp, 1, uv, panel.seeThrough);
+            if (panel.sharp) r.drawPanel(panel.sharp, false, sheetPose(s), s.w / s.pxPerM, s.h / s.pxPerM, 0, vp, 1, uv, panel.seeThrough, panel.external);
+            else r.drawPanel(panel.tex, panel.external, sheetPose(s), s.w / s.pxPerM, s.h / s.pxPerM, 0, vp, 1, uv, panel.seeThrough);
         };
         for (const Sheet& s : panel.sheets) draw(s);
         r.holes.clear();
@@ -486,19 +525,24 @@ void Interaction::render(Renderer& r, const M4& vp, V3 eye) {
         r.drawPanel(panel.tex, panel.external, panel.pose, panel.width, panel.height, 0.022f, vp);
     }
     if (panel.visible && (!scene.empty() || plate)) {
-        // the scale badge: "SCALE 1:4.2   [TRUE SIZE]", or "SCALE 1:1 TRUE SIZE   [FIT VIEW]"
+        // the scale badge: "SCALE 1:4.2   [PASSTHROUGH] [TRUE SIZE]", or "SCALE 1:1 TRUE SIZE   [PASSTHROUGH] [FIT VIEW]"
         std::string ratio = scaleText(), button = trueScale ? "FIT VIEW" : "TRUE SIZE";
-        std::string key = ratio + "|" + button + (badgeHot ? "*" : "");
+        std::string key = ratio + "|" + button + "|" + std::to_string(badgeHot) + (passthroughAvailable ? passthrough ? "R" : "r" : "");
         if (key != badgeDrawn || !badgeTex || !glIsTexture(badgeTex)) {
             int W = (int)(kBadgeW * kBadgePx), H = (int)(kBadgeH * kBadgePx);
             Canvas c(W, H); c.rect(0, 0, W, H, 14, 17, 21);
             c.text(32, (H - 48) / 2, "SCALE", 3, 138, 150, 163);
             if (trueScale) c.text(180, (H - 64) / 2, "1:1", 4, 110, 200, 140), c.text(180 + 4 * 32, (H - 48) / 2, "TRUE SIZE", 3, 110, 200, 140);
             else c.text(180, (H - 64) / 2, ratio, 4, 235, 238, 242);
-            int bw = 280, x0 = W - 16 - bw;
-            uint8_t g = badgeHot ? 125 : 111, rr = badgeHot ? 58 : 42, bb = badgeHot ? 221 : 201;
-            c.rect(x0, 14, W - 16, H - 14, rr, g, bb, (H - 28) / 2);
-            c.text(x0 + (bw - Canvas::textWidth(button, 3)) / 2, (H - 48) / 2, button, 3, 255, 255, 255);
+            auto pill = [&](int x0, int bw, const std::string& label, bool on, bool hot) {
+                // on: filled blue; off: outlined grey
+                if (on) c.rect(x0, 14, x0 + bw, H - 14, hot ? 58 : 42, hot ? 125 : 111, hot ? 221 : 201, (H - 28) / 2);
+                else { c.rect(x0, 14, x0 + bw, H - 14, hot ? 96 : 70, hot ? 104 : 78, hot ? 114 : 88, (H - 28) / 2);
+                       c.rect(x0 + 3, 17, x0 + bw - 3, H - 17, 14, 17, 21, (H - 34) / 2); }
+                c.text(x0 + (bw - Canvas::textWidth(label, 3)) / 2, (H - 48) / 2, label, 3, 255, 255, 255);
+            };
+            pill(W - 16 - kSizeBtnW, kSizeBtnW, button, true, badgeHot == 0);
+            if (passthroughAvailable) pill(W - 32 - kSizeBtnW - kRoomBtnW, kRoomBtnW, "PASSTHROUGH", passthrough, badgeHot == 1);
             badgeTex = r.makeTexture(W, H, c.px.data(), glIsTexture(badgeTex) ? badgeTex : 0); badgeDrawn = key;
         }
         r.drawPanel(badgeTex, false, badgePose(), kBadgeW, kBadgeH, kBadgeH / 2, vp);

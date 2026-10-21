@@ -27,13 +27,16 @@ public:
     /** `uv`: the part of the image shown (x y w h, 0..1, y down), whole by default; `alpha`: the image's own transparency
      *  (a window surface: premultiplied), else opaque. */
     void drawPanel(GLuint tex, bool external, const Pose& center, float w, float h, float radius, const M4& viewProj, float dim = 1.f,
-                   const float* uv = nullptr, bool alpha = false);
+                   const float* uv = nullptr, bool alpha = false, bool premultiplied = false);
     /** The image's alpha at w x h (row 0 = top), for hit testing what is drawn on a see-through surface. */
     void readAlpha(GLuint tex, bool external, int w, int h, std::vector<uint8_t>& out);
-    GLuint makeTexture(int w, int h, const void* rgba, GLuint reuse = 0);
+    GLuint makeTexture(int w, int h, const void* rgba, GLuint reuse = 0);      // mipmapped, trilinear + anisotropic
+    /** The image copied into a mipmapped texture (premultiplied alpha kept) for sharp, shimmer-free sampling. */
+    GLuint mipmappedCopy(GLuint src, bool external, int w, int h, GLuint reuse);
     /** Forget GL objects of a previous context (they are gone with it): the next upload starts afresh. */
     void contextLost() { uploaded = ~0u; uploadedScene = nullptr; buffers.clear(); arrays.clear(); }
     float clear[3] = {0.11f, 0.13f, 0.16f};
+    bool seeThrough = false;            // passthrough: clear to transparent, so the camera view shows where nothing is drawn
     /** Parts of the image drawPanel leaves out (up to 4, x0 y0 x1 y1 in 0..1, y down): shown elsewhere. */
     std::vector<float> holes;
     /** 2.2 when drawing into an sRGB swapchain (colours here are sRGB values, the target expects linear), 1 otherwise. */
@@ -43,6 +46,7 @@ private:
     GLint uMvp = -1, uModel = -1, uColor = -1, uLit = -1, uEye = -1;
     unsigned uploaded = ~0u; const Scene* uploadedScene = nullptr;
     GLuint maskFbo = 0, maskTex = 0; int maskW = 0, maskH = 0;
+    GLuint copyFbo = 0; int copyW = 0, copyH = 0;
     std::vector<GLuint> buffers, arrays;                    // owned by the last upload
 };
 

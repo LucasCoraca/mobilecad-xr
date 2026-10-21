@@ -26,7 +26,9 @@ import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.snapshotFlow
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.ui.platform.ComposeView
+import androidx.compose.ui.platform.compositionContext
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.setViewTreeLifecycleOwner
 import androidx.lifecycle.setViewTreeViewModelStoreOwner
@@ -62,13 +64,14 @@ class XrActivity : ComponentActivity() {
     private var lastDoc = ""
 
     private external fun nativeAttach()
-    private external fun nativeSetLayout(w: Int, h: Int, rects: FloatArray)
+    private external fun nativeSetLayout(w: Int, h: Int, pxPerDp: Float, rects: FloatArray)
     private external fun nativeStartXr()
     private external fun nativeStop()
     private external fun nativeBeginScene(title: String)
     private external fun nativeAddMesh(name: String, tris: FloatArray, edges: FloatArray, r: Float, g: Float, b: Float, alpha: Float)
     private external fun nativeSetView(hoverObj: String, hoverSub: String, fade: Float, lines: FloatArray, dots: FloatArray, labelPos: FloatArray, labelText: Array<String>)
     private external fun nativeSetSketch(pixels: java.nio.ByteBuffer?, w: Int, h: Int, corners: FloatArray)
+    private external fun nativeSetSketchLabels(pixels: java.nio.ByteBuffer?, w: Int, h: Int, labels: FloatArray)
     private external fun nativeModelScale(): Float
     private external fun nativeSetPopups(rects: FloatArray)
     private external fun nativeEndScene(place: Boolean)
@@ -108,7 +111,10 @@ class XrActivity : ComponentActivity() {
 
     // ---------------------------------------------------------------- the 3D model follows the document
     private fun syncScene() = lifecycleScope.launch {
-        snapshotFlow { Triple(app.sceneVersion.intValue, app.docName, app.selection.toList()) }.collect { (_, doc, sel) ->
+        // a document change is followed by the refresh that loads its shapes: the model is placed / sized on that one
+        var newDocAt = -1
+        snapshotFlow { Triple(app.sceneVersion.intValue, app.docName, app.selection.toList()) }.collect { (ver, doc, sel) ->
+            if (doc != lastDoc) { newDocAt = ver; lastDoc = doc }
             val meshes = app.meshes
             nativeBeginScene(doc)
             for ((name, m) in meshes) {
@@ -119,8 +125,9 @@ class XrActivity : ComponentActivity() {
                 val alpha = if (ghost) 0.45f else if (name in app.transparent) 0.5f else 1f
                 nativeAddMesh(name, m.tris, m.edges, ((c shr 16) and 255) / 255f, ((c shr 8) and 255) / 255f, (c and 255) / 255f, alpha)
             }
-            nativeEndScene(doc != lastDoc)
-            lastDoc = doc
+            val place = newDocAt >= 0 && ver > newDocAt
+            nativeEndScene(place)
+            if (place) newDocAt = -1
             nativeSetSelection(sel.map { it.obj }.toTypedArray(), sel.map { it.sub }.toTypedArray())
             viewChanged()
         }
@@ -167,22 +174,53 @@ class XrActivity : ComponentActivity() {
         nativeSetView(o.hover?.first ?: "", o.hover?.second ?: "", if (o.dim) 0.35f else 1f, o.lines, o.dots,
             o.labels.flatMap { it.first.toList() }.toFloatArray(), o.labels.map { it.second }.toTypedArray())
         val sk = app.sketch; val b = v.xrSketchBounds()
-        if (sk == null || b == null) { if (skShown) { nativeSetSketch(null, 0, 0, FloatArray(12)); skShown = false; skRegion = null }; return }
-        val n = 1024; val scale = nativeModelScale().takeIf { it > 0f } ?: 0.001f        // m per mm
+        if (sk == null || b == null) { if (skShown) { nativeSetSketch(null, 0, 0, FloatArray(12)); nativeSetSketchLabels(null, 0, 0, FloatArray(0)); skShown = false; skRegion = null }; return }
+        val n = 1536; val scale = nativeModelScale().takeIf { it > 0f } ?: 0.001f        // m per mm
+        // A region of the sketch plane around the sketch, at least 30 cm across in the room. A dp is 1 mm in the room (a
+        // phone's dp is ~0.03 degrees of view; legible in a headset takes ~3x that), at least a pixel: up to 1.5 m across
+        // that holds; bigger sketches get coarser (up to 2 m, beyond which the region follows where you work). It stays while what is drawn fits and it is not much too big, so it does not jump.
+        val minSize = 0.3 / scale; val maxSize = 2.0 / scale
+        val ext = maxOf(b[2] - b[0], b[3] - b[1]); val want = (ext * 1.4).coerceIn(minSize, maxSize)
+        val focus = sk.preview?.p ?: sk.pendingPoints().lastOrNull()
+        val cx = if (ext * 1.4 > maxSize && focus != null) focus.x else (b[0] + b[2]) / 2
+        val cy = if (ext * 1.4 > maxSize && focus != null) focus.y else (b[1] + b[3]) / 2
         var r = skRegion
-        val inside = r != null && b[0] >= r[0] && b[1] >= r[1] && b[2] <= r[0] + r[2] && b[3] <= r[1] + r[2]
-        if (r == null || !inside || sk.name != skName || kotlin.math.abs(scale / skScale - 1f) > 0.3f) {
-            // at least half a metre across in the room, centred on the sketch
-            val ext = maxOf(b[2] - b[0], b[3] - b[1]); val size = maxOf(ext * 1.4, 0.5 / scale)
-            r = doubleArrayOf((b[0] + b[2]) / 2 - size / 2, (b[1] + b[3]) / 2 - size / 2, size); skRegion = r; skName = sk.name; skScale = scale
+        val fits = r != null && minOf(b[2], cx + want / 2) <= r[0] + r[2] && maxOf(b[0], cx - want / 2) >= r[0] &&
+            minOf(b[3], cy + want / 2) <= r[1] + r[2] && maxOf(b[1], cy - want / 2) >= r[1]
+        if (r == null || !fits || r[2] > want * 2 || sk.name != skName || kotlin.math.abs(scale / skScale - 1f) > 0.3f) {
+            r = doubleArrayOf(cx - want / 2, cy - want / 2, want); skRegion = r; skName = sk.name; skScale = scale
         }
         val bmp = skBmp ?: android.graphics.Bitmap.createBitmap(n, n, android.graphics.Bitmap.Config.ARGB_8888).also { skBmp = it }
         val metresPerPx = r[2] * scale / n
-        val dpPx = maxOf(1f, (0.0012 / metresPerPx).toFloat())                        // a dp is ~1.2 mm in the room
-        val corners = v.xrDrawSketch(bmp, r[0], r[1], r[2], dpPx) ?: return
+        val dpPx = maxOf(1f, (0.001 / metresPerPx).toFloat())                         // a dp is ~1 mm in the room
+        val labels = ArrayList<Pair<DoubleArray, app.mobilecad.sketch.SketchEditor.Label>>()
+        val corners = v.xrDrawSketch(bmp, r[0], r[1], r[2], dpPx, labels, LABEL_DP) ?: return
         val buf = skBuf ?: java.nio.ByteBuffer.allocateDirect(n * n * 4).also { skBuf = it }
         buf.rewind(); bmp.copyPixelsToBuffer(buf)
         nativeSetSketch(buf, n, n, corners); skShown = true
+        sendLabels(labels)
+    }
+
+    private var lbBmp: android.graphics.Bitmap? = null
+    private var lbBuf: java.nio.ByteBuffer? = null
+    /** The sketch's text labels, each painted by the sketch editor into a cell of one texture (rows, tallest first), with
+     *  its point (model mm), its box around the point (dp) and its cell (0..1): the headset shows them facing the user. */
+    private fun sendLabels(labels: List<Pair<DoubleArray, app.mobilecad.sketch.SketchEditor.Label>>) {
+        val n = 1024; val bmp = lbBmp ?: android.graphics.Bitmap.createBitmap(n, n, android.graphics.Bitmap.Config.ARGB_8888).also { lbBmp = it }
+        val c = android.graphics.Canvas(bmp); c.drawColor(Color.TRANSPARENT, android.graphics.PorterDuff.Mode.CLEAR)
+        val out = ArrayList<Float>(); var x = 0f; var y = 0f; var rowH = 0f; val pad = 2f
+        for ((at, l) in labels.sortedByDescending { it.second.b - it.second.t }) {
+            val w = l.r - l.l + 2 * pad; val h = l.b - l.t + 2 * pad
+            if (x + w > n) { x = 0f; y += rowH; rowH = 0f }
+            if (y + h > n || w > n) break                                             // full: the rest is not shown
+            l.paint(c, x + pad - l.l, y + pad - l.t)
+            out.addAll(listOf(at[0].toFloat(), at[1].toFloat(), at[2].toFloat(),
+                (l.l + l.r) / 2 / LABEL_DP, (l.t + l.b) / 2 / LABEL_DP, w / LABEL_DP, h / LABEL_DP, x / n, y / n, (x + w) / n, (y + h) / n))
+            x += w; rowH = maxOf(rowH, h)
+        }
+        val buf = lbBuf ?: java.nio.ByteBuffer.allocateDirect(n * n * 4).also { lbBuf = it }
+        buf.rewind(); bmp.copyPixelsToBuffer(buf)
+        nativeSetSketchLabels(if (out.isEmpty()) null else buf, n, n, out.toFloatArray())
     }
 
     // ---------------------------------------------------------------- callbacks from the XR core (render thread)
@@ -198,11 +236,12 @@ class XrActivity : ComponentActivity() {
 
     // ---------------------------------------------------------------- the UI panel: MobileCAD on a virtual display
     /** MobileCAD lays its interface out for XR (XrLayout): the virtual display's size and the parts the headset shows as
-     *  separate surfaces around the user - feature list, view area, bars, docked panels (pixels at 240 dpi). */
+     *  separate surfaces around the user - feature list, view area, bars, docked panels. Rendered at 2.25 px per dp
+     *  (360 dpi) and shown mipmapped: denser than the headset's pixels, so text stays crisp. */
     private fun layoutPanel() {
-        val k = 1.5f; val t = XrLayout.TREE * k; val st = XrLayout.STAGE * k; val sd = XrLayout.SIDE * k
+        val k = PX_PER_DP; val t = XrLayout.TREE * k; val st = XrLayout.STAGE * k; val sd = XrLayout.SIDE * k
         val h = XrLayout.HEIGHT * k; val b = XrLayout.BARS * k
-        nativeSetLayout((t + st + sd).toInt(), h.toInt(), floatArrayOf(0f, 0f, t, h,  t, b, st, h - b,  t, 0f, st, b,  t + st, 0f, sd, h))
+        nativeSetLayout((t + st + sd).toInt(), h.toInt(), k, floatArrayOf(0f, 0f, t, h,  t, b, st, h - b,  t, 0f, st, b,  t + st, 0f, sd, h))
     }
 
     /** Called on the GL thread with the panel's texture: MobileCAD's UI is rendered into it through a virtual display. */
@@ -213,7 +252,7 @@ class XrActivity : ComponentActivity() {
         runOnUiThread {
             presentation?.dismiss(); display?.release()
             val dm = getSystemService(DisplayManager::class.java)
-            val vd = dm.createVirtualDisplay("MobileCAD XR panel", w, h, 240, surface, DisplayManager.VIRTUAL_DISPLAY_FLAG_OWN_CONTENT_ONLY)
+            val vd = dm.createVirtualDisplay("MobileCAD XR panel", w, h, (160 * PX_PER_DP).toInt(), surface, DisplayManager.VIRTUAL_DISPLAY_FLAG_OWN_CONTENT_ONLY)
             display = vd
             presentation = Presentation(this, vd.display).apply {
                 // see-through where MobileCAD draws nothing: the model in the room shows between the surfaces
@@ -240,7 +279,46 @@ class XrActivity : ComponentActivity() {
                 setContentView(view, ViewGroup.LayoutParams(w, h))
                 show()
             }
+            watchTextFields()
         }
+    }
+
+    // ---------------------------------------------------------------- the keyboard (see XrKeyboard)
+    private val keyboard = XrKeyboard()
+    private var keyboardWindow: android.widget.PopupWindow? = null
+    private var watching = false
+    /** While a text field on the panel has focus, the keyboard is shown under the view area (a window that never takes the
+     *  focus, so the field keeps it). */
+    private fun watchTextFields() {
+        if (watching) return; watching = true
+        lifecycleScope.launch {
+            while (true) {
+                kotlinx.coroutines.delay(250)
+                val kb = keyboardWindow?.contentView?.rootView
+                val ed = panelWindows().filter { it !== kb }.firstNotNullOfOrNull { w -> w.findFocus()?.takeIf { it.onCheckIsTextEditor() } }
+                keyboard.attach(ed)
+                if (ed != null && keyboardWindow?.isShowing != true) showKeyboard() else if (ed == null) keyboardWindow?.dismiss()
+            }
+        }
+    }
+    /** The window recomposer Compose installed on the interface's window (a view tag on its root or a parent). */
+    private fun findCompositionContext(v: View): androidx.compose.runtime.CompositionContext? {
+        v.compositionContext?.let { return it }
+        if (v is ViewGroup) for (i in 0 until v.childCount) findCompositionContext(v.getChildAt(i))?.let { return it }
+        return null
+    }
+    private fun showKeyboard() {
+        val decor = presentation?.window?.decorView ?: return
+        val k = PX_PER_DP; val kw = 460; val kh = 220
+        val win = keyboardWindow ?: android.widget.PopupWindow(ComposeView(decor.context).apply {
+            // composed by the interface's recomposer (a popup window's root has no lifecycle owner of its own)
+            setViewTreeLifecycleOwner(this@XrActivity); setViewTreeSavedStateRegistryOwner(this@XrActivity); setViewTreeViewModelStoreOwner(this@XrActivity)
+            findCompositionContext(decor)?.let { setParentCompositionContext(it) }
+            setContent { MaterialTheme { keyboard.Content(androidx.compose.ui.Modifier.fillMaxSize()) } }
+        }, (kw * k).toInt(), (kh * k).toInt(), false).apply { isTouchable = true; isOutsideTouchable = false; inputMethodMode = android.widget.PopupWindow.INPUT_METHOD_NOT_NEEDED }
+        keyboardWindow = win
+        // centred at the bottom of the view area, in front of the model
+        win.showAtLocation(decor, android.view.Gravity.NO_GRAVITY, ((XrLayout.TREE + (XrLayout.STAGE - kw) / 2f) * k).toInt(), ((XrLayout.HEIGHT - kh - 10) * k).toInt())
     }
 
     /** Called on the GL thread every frame: latch the newest UI image into the panel texture. */
@@ -374,5 +452,10 @@ class XrActivity : ComponentActivity() {
         })
     }
 
-    companion object { init { System.loadLibrary("mcxr") } }
+    companion object {
+        const val PX_PER_DP = 2.25f
+        const val LABEL_DP = 3f                // sketch labels: texture pixels per dp
+        init { System.loadLibrary("mcxr") }
+    }
 }
+

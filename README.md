@@ -18,7 +18,15 @@ around you like a desk with three monitors, with nothing behind it, so the model
 - **right:** the docked panels: tool panels, feature dialogs, task panels, the sketch's constraint list, the number pad.
 
 Every window can be moved on its own: grip it and put it where you like (A / X puts them all back). Menus and dialogs
-are shown whole, each on its own surface.
+are shown whole, each on its own surface. When a text field has focus (tool search, names, text prompts, spreadsheet
+cells) a keyboard opens under the view area: point and click its keys.
+
+**Passthrough** (Quest): your room shows behind the model and the windows, where they draw nothing. The scale badge's
+**PASSTHROUGH** button switches it on and off (on by default); off, you work in a dark room with a floor grid.
+
+The interface is rendered sharper than the headset's pixels and filtered smoothly, and the scene is drawn with 4x
+anti-aliasing. While you sketch, the constraint symbols, dimensions, sizes and snap hints face you at a readable size,
+wherever you look at the sketch from.
 
 The model stands on a **build plate**: a see-through tabletop on its ground plane (FreeCAD's XY plane) around the
 3D origin, with a grid (its spacing printed on the rim) and the X / Y / Z axes. It is the table you work on: grab its rim
@@ -49,11 +57,11 @@ finger on the phone you do in 3D with the trigger, with the same tools and the s
 | Pointing | Hover | Pre-selection, and the sketch / Draft tool's preview follows the ray |
 | Grip | Move that window | Grab the model: move and turn it with your hand · on the build plate's rim: pick the table up and carry it |
 | Trigger on the build plate's rim | | Slide the table where the ray points |
-| Both grips | | Scale and turn the model between your hands |
+| Both grips | | Zoom (pinch: pull your hands apart / together) and turn the model between your hands |
 | Thumbstick | Scroll | Up/down scales, left/right turns (about the origin) |
 | B / Y | | The view's context menu (a two-finger tap on the phone) |
 | A / X | Put the windows back and the table in front of you | |
-| Scale badge (under the tool bars) | **TRUE SIZE**: the model at its real size, 1 mm = 1 mm · **FIT VIEW**: back to the scaled view | |
+| Scale badge (under the tool bars) | **TRUE SIZE**: the model at its real size, 1 mm = 1 mm · **FIT VIEW**: back to the scaled view · **PASSTHROUGH**: your room on / off | |
 
 ### True size
 
