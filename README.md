@@ -73,7 +73,11 @@ never lines up); only the rays are drawn.
 
 ### Hands
 
-Put the controllers down and use your hands: the headset tracks them and shows a hand model on your hands, every finger
+**Switched off for now** (since 0.9.3): on the headset the grab was too eager, so the app uses the controllers only.
+The code below stays and is still tested on the simulated headset; `kHandTracking` in `core/xr_session.cpp` (and the
+hand-tracking feature and permission in `android/app/src/arm64/AndroidManifest.xml`) bring it back.
+
+With it on, you put the controllers down and use your hands: the headset tracks them and shows a hand model on your hands, every finger
 following yours. Everything works the same, with the gestures standing in for the buttons:
 
 | Hand | Does what |

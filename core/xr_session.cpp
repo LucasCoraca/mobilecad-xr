@@ -20,6 +20,8 @@ typedef void (*RbStorageMsFn)(GLenum, GLsizei, GLenum, GLsizei, GLsizei);
 static FbTex2DMsFn fbTex2DMs = nullptr; static RbStorageMsFn rbStorageMs = nullptr;
 #endif
 static const int kSamples = 4;
+// Hand tracking is switched off for now (its grab was too eager on the headset): controllers only. The code stays (hands.h).
+static const bool kHandTracking = false;
 
 #define XRCHECK(call) do { XrResult r_ = (call); if (XR_FAILED(r_)) { char s_[XR_MAX_RESULT_STRING_SIZE] = "?"; \
     if (instance) xrResultToString(instance, r_, s_); LOG("%s failed: %s (%d)", #call, s_, (int)r_); return false; } } while (0)
@@ -53,11 +55,11 @@ bool Headset::create(const PlatformInit& p, const char* appName, std::string* er
     if (layerSettings) enable.push_back(XR_FB_COMPOSITION_LAYER_SETTINGS_EXTENSION_NAME);
 #endif
     if (ptExt) enable.push_back(XR_FB_PASSTHROUGH_EXTENSION_NAME);
-    bool handExt = hasExtension(exts, XR_EXT_HAND_TRACKING_EXTENSION_NAME);
+    bool handExt = kHandTracking && hasExtension(exts, XR_EXT_HAND_TRACKING_EXTENSION_NAME);
     if (handExt) enable.push_back(XR_EXT_HAND_TRACKING_EXTENSION_NAME);
     handAim = handExt && hasExtension(exts, XR_FB_HAND_TRACKING_AIM_EXTENSION_NAME);
     if (handAim) enable.push_back(XR_FB_HAND_TRACKING_AIM_EXTENSION_NAME);
-    handInteraction = hasExtension(exts, XR_EXT_HAND_INTERACTION_EXTENSION_NAME);
+    handInteraction = kHandTracking && hasExtension(exts, XR_EXT_HAND_INTERACTION_EXTENSION_NAME);
     if (handInteraction) enable.push_back(XR_EXT_HAND_INTERACTION_EXTENSION_NAME);
 #ifdef __ANDROID__
     if (hasExtension(exts, XR_KHR_ANDROID_CREATE_INSTANCE_EXTENSION_NAME)) enable.push_back(XR_KHR_ANDROID_CREATE_INSTANCE_EXTENSION_NAME);
