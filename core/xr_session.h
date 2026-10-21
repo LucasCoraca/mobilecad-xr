@@ -68,6 +68,14 @@ private:
      *  multisampled buffers (msFbo) blitted to the image. */
     struct Eye { XrSwapchain swapchain = XR_NULL_HANDLE; std::vector<GLuint> images; GLuint depth = 0, fbo = 0, msColor = 0, msFbo = 0; int w = 0, h = 0; };
     int samples = 1;
+    /** The UI as compositor quad layers (see Interaction::uiLayers): the image without its popups (`uiBase`), the whole
+     *  image (`uiFull`, which the popups show), and a cursor dot. XR_FB_composition_layer_settings: supersampled and
+     *  sharpened where the runtime offers it. */
+    struct Chain { XrSwapchain sc = XR_NULL_HANDLE; std::vector<GLuint> images; int w = 0, h = 0; };
+    Chain uiBase, uiFull, cursorChain; bool uiTried = false, layerSettings = false; uint32_t maxLayers = 16;
+    bool makeChain(Chain& c, int w, int h);
+    bool makeUiChains(int w, int h);
+    void updateUi(Interaction& ia, Renderer& r);
     Eye eyes[2]; int64_t colorFormat = 0; bool srgb = false;
     XrActionSet actionSet = XR_NULL_HANDLE;
     XrAction aAim = XR_NULL_HANDLE, aGrip = XR_NULL_HANDLE, aSelect = XR_NULL_HANDLE, aSqueeze = XR_NULL_HANDLE, aStick = XR_NULL_HANDLE, aMenu = XR_NULL_HANDLE, aContext = XR_NULL_HANDLE;

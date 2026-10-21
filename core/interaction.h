@@ -121,8 +121,15 @@ public:
     void render(Renderer& r, const M4& viewProj, V3 eye);
     /** Reads the panel image's alpha for hit testing (call when the image changed, at most a few times a second). */
     void updateMask(Renderer& r);
-    /** The panel image changed: refresh its mipmapped copy (with sheets). */
+    /** The panel image changed: refresh its mipmapped copy (with sheets), or mark it for the compositor layers. */
     void panelChanged(Renderer& r);
+    /** The headset shows the UI's sheets and popups as compositor quad layers (sharper: sampled once, at display
+     *  resolution) instead of drawing them into the eye images; `uiDirty`: the image changed since the layers got it. */
+    bool uiLayers = false, uiDirty = true;
+    struct UiQuad { Pose pose; float w, h; float x, y, pw, ph; bool popup; };    // world centre / size (m), image rect (px)
+    std::vector<UiQuad> uiQuads() const;
+    /** Where the rays meet the UI (world), for cursors drawn over the layers. */
+    std::vector<V3> uiCursors() const;
     Pose sheetPose(const Sheet& s) const { return compose(Pose{panel.pose.pos, panel.pose.rot, 1}, s.local); }
 
 private:

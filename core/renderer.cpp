@@ -278,4 +278,17 @@ GLuint Renderer::mipmappedCopy(GLuint src, bool external, int w, int h, GLuint r
     return t;
 }
 
+void Renderer::drawImageInto(GLuint dst, int w, int h, GLuint src, bool external, float gammaOut, const std::vector<float>& holeUv) {
+    if (!dst || !src || (external && !oesProg)) return;
+    if (!copyFbo) glGenFramebuffers(1, &copyFbo);
+    GLint prevFbo = 0, view[4]; glGetIntegerv(GL_FRAMEBUFFER_BINDING, &prevFbo); glGetIntegerv(GL_VIEWPORT, view);
+    glBindFramebuffer(GL_FRAMEBUFFER, copyFbo); glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, dst, 0);
+    glViewport(0, 0, w, h); glClearColor(0, 0, 0, 0); glClear(GL_COLOR_BUFFER_BIT); glDisable(GL_DEPTH_TEST);
+    M4 ortho{}; ortho.m[0] = 2; ortho.m[5] = 2; ortho.m[10] = 1; ortho.m[15] = 1;        // OpenGL images: row 0 = bottom
+    float g = gamma; gamma = gammaOut; std::vector<float> h0 = holes; holes = holeUv;
+    drawPanel(src, external, Pose{V3{}, Q{}, 1}, 1, 1, 0, ortho, 1, nullptr, true, true);
+    gamma = g; holes = h0;
+    glBindFramebuffer(GL_FRAMEBUFFER, prevFbo); glViewport(view[0], view[1], view[2], view[3]); glEnable(GL_DEPTH_TEST);
+}
+
 }  // namespace mcxr

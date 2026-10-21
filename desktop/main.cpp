@@ -3,7 +3,8 @@
 // mirrors the left eye into a window. Instead of MobileCAD's Android UI (which only exists on Android) it shows a small
 // stand-in panel with real buttons, so pointing at / clicking the UI panel can be tested here too.
 //
-//   mobilecad-xr-desktop [--autotest] [--true-size] [--screenshot out.ppm --frames N] scene.mcxr|dir ...
+//   mobilecad-xr-desktop [--autotest] [--true-size] [--sheets] [--screenshot out.ppm --frames N] scene.mcxr|dir ...
+//   --sheets: the stand-in panel cut into two surfaces, shown as compositor layers as on the Quest (to test that path)
 #include <dirent.h>
 #include <algorithm>
 #include <chrono>
@@ -43,12 +44,13 @@ static Q lookRot(V3 d) {
 }
 
 int main(int argc, char** argv) {
-    std::vector<std::string> files; const char* shot = nullptr; int shotFrames = 120; bool autotest = false, startTrue = false;
+    std::vector<std::string> files; const char* shot = nullptr; int shotFrames = 120; bool autotest = false, startTrue = false, sheets = false;
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
         if (a == "--screenshot" && i + 1 < argc) shot = argv[++i];
         else if (a == "--frames" && i + 1 < argc) shotFrames = std::atoi(argv[++i]);
         else if (a == "--autotest") autotest = true;
+        else if (a == "--sheets") sheets = true;
         else if (a == "--true-size") startTrue = true;
         else if (DIR* d = opendir(a.c_str())) {
             while (dirent* e = readdir(d)) { std::string n = e->d_name; if (n.size() > 5 && n.substr(n.size() - 5) == ".mcxr") files.push_back(a + "/" + n); }
@@ -98,6 +100,7 @@ int main(int argc, char** argv) {
             int tw = (int)std::strlen(k.label) * 8 * 4; c.text((k.x0 + k.x1 - tw) / 2, (k.y0 + k.y1) / 2 - 32, k.label, 4, 255, 255, 255);
         }
         ia.panel.tex = renderer.makeTexture(c.w, c.h, c.px.data(), ia.panel.tex);
+        ia.panelChanged(renderer);
     };
     auto load = [&](size_t i) {
         current = i % files.size(); ++loads;
@@ -111,6 +114,15 @@ int main(int argc, char** argv) {
     };
     int panelClicks = 0;
     ia.panel.visible = true;
+    if (sheets) {                                                     // left and right halves, turned towards the viewer
+        float hw = ia.panel.pxW / 2.f, ppm = 1600;
+        for (int k = 0; k < 2; ++k) {
+            Sheet s; s.x = k * hw; s.y = 0; s.w = hw; s.h = (float)ia.panel.pxH; s.pxPerM = ppm;
+            Q q = axisAngle({0, 1, 0}, k ? -0.35f : 0.35f);
+            s.local = s.home = {V3{k ? 0.27f : -0.27f, -0.1f, -1.0f}, q, 1};
+            ia.panel.sheets.push_back(s);
+        }
+    }
     ia.onPick = [&](const ElemRef& e, V3) {
         if (e.valid()) lastPick = ia.scene.meshes[e.mesh].name + (e.kind == 'E' ? " Edge" : " Face") + std::to_string(e.id);
         std::fprintf(stderr, "mcxr: pick %s\n", e.valid() ? lastPick.c_str() : "(nothing)");

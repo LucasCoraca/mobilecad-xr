@@ -24,8 +24,9 @@ cells) a keyboard opens under the view area: point and click its keys.
 **Passthrough** (Quest): your room shows behind the model and the windows, where they draw nothing. The scale badge's
 **PASSTHROUGH** button switches it on and off (on by default); off, you work in a dark room with a floor grid.
 
-The interface is rendered sharper than the headset's pixels and filtered smoothly, and the scene is drawn with 4x
-anti-aliasing. While you sketch, the constraint symbols, dimensions, sizes and snap hints face you at a readable size,
+On the headset the windows are compositor layers: the headset samples them once, straight at display resolution
+(supersampled and sharpened), instead of through the eye images, so text is as crisp as the display allows. The scene is
+drawn with 4x anti-aliasing at 1.3x the runtime's recommended resolution. While you sketch, the constraint symbols, dimensions, sizes and snap hints face you at a readable size,
 wherever you look at the sketch from.
 
 The model stands on a **build plate**: a see-through tabletop on its ground plane (FreeCAD's XY plane) around the
@@ -66,7 +67,7 @@ finger on the phone you do in 3D with the trigger, with the same tools and the s
 ### True size
 
 The badge under the tool bars always shows the model's scale (`SCALE 1:4.2`, `16:1`). **TRUE SIZE** switches to 1:1:
-a small part stays where it is (a 25 mm bit really is 25 mm in your hand), a part bigger than arm's reach is stood on
+a small part comes to ~40 cm in front of you to look at closely (a 25 mm bit really is 25 mm), a part bigger than arm's reach is stood on
 the floor in front of you so you can walk around it (a building at full size). In true size the scaling gestures only
 move and turn the model, so the scale can't drift; **FIT VIEW** puts the model back where and how big it was. Free
 scaling with both hands also snaps to 1:1 as you pass it.

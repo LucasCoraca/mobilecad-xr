@@ -33,6 +33,9 @@ public:
     GLuint makeTexture(int w, int h, const void* rgba, GLuint reuse = 0);      // mipmapped, trilinear + anisotropic
     /** The image copied into a mipmapped texture (premultiplied alpha kept) for sharp, shimmer-free sampling. */
     GLuint mipmappedCopy(GLuint src, bool external, int w, int h, GLuint reuse);
+    /** The image drawn into texture `dst` (w x h, row 0 = bottom as OpenGL images are): for a compositor layer. Colours
+     *  raised to `gammaOut` (2.2 for an sRGB target), alpha kept premultiplied, `holeUv` regions left transparent. */
+    void drawImageInto(GLuint dst, int w, int h, GLuint src, bool external, float gammaOut, const std::vector<float>& holeUv);
     /** Forget GL objects of a previous context (they are gone with it): the next upload starts afresh. */
     void contextLost() { uploaded = ~0u; uploadedScene = nullptr; buffers.clear(); arrays.clear(); }
     float clear[3] = {0.11f, 0.13f, 0.16f};

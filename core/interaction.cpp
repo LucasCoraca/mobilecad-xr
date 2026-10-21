@@ -65,8 +65,9 @@ float Interaction::plateRadius() const {
     float rxy = 0;
     if (!scene.empty()) for (int k = 0; k < 4; ++k)
         rxy = std::max(rxy, std::hypot(k & 1 ? scene.max.x : scene.min.x, k & 2 ? scene.max.y : scene.min.y));
-    // 15 to 30 cm in the room: a parts table, not a floor (a part reaching past it overhangs; it stays clear of the bars)
-    float sc = std::max(model.scale, 1e-9f), r = std::max(std::min(rxy * 1.15f, 0.30f / sc), 0.15f / sc);
+    // 15 to 30 cm in the room: a parts table, not a floor (a part reaching past it overhangs; it stays clear of the bars).
+    // At true size a small part keeps a small plate (from 5 cm), so it does not vanish on it.
+    float sc = std::max(model.scale, 1e-9f), r = std::max(std::min(rxy * 1.15f, 0.30f / sc), (trueScale ? 0.05f : 0.15f) / sc);
     float g = 1; while (g * 10 < r / 8) g *= 10;                     // round up to whole grid cells (a stable size)
     float step = r / 8 <= g ? g : r / 8 <= 2 * g ? 2 * g : r / 8 <= 5 * g ? 5 * g : 10 * g;
     return std::ceil(r / step) * step;
@@ -104,6 +105,7 @@ void Interaction::setTrueScale(bool on) {
     fitPose = model; fitSaved = true;
     V3 c = apply(model, plate ? V3{} : scene.center());               // scale about the build plate's centre (the model's)
     model.pos = c + (model.pos - c) * (kTrueScale / model.scale); model.scale = kTrueScale;
+    if (scene.empty()) return;                                         // just the plate: it only changes size
     float r = scene.radius() * kTrueScale;
     if (r > 0.45f) {
         // bigger than arm's reach: stand it on the floor, far enough in front of the viewer to walk around it
@@ -112,6 +114,12 @@ void Interaction::setTrueScale(bool on) {
         model.pos = model.pos + (nc - c);
         model.pos.y += floorY - lowestY();
     } else {
+        if (r < 0.15f) {
+            // small enough to hold: brought to ~40 cm in front of the eyes, a little below them, to look at closely
+            V3 d = c - viewer; d.y = 0; d = len(d) > 1e-3f ? norm(d) : V3{0, 0, -1};
+            V3 nc = viewer + d * 0.4f + V3{0, -0.18f, 0}, cm = apply(model, scene.center());
+            model.pos = model.pos + (nc - cm);
+        }
         float low = lowestY(); if (low < floorY) model.pos.y += floorY - low;    // never below the floor
     }
 }
@@ -204,7 +212,23 @@ bool Interaction::panelRay(const Pose& aim, float* t, float* px, float* py, bool
 }
 
 void Interaction::panelChanged(Renderer& r) {
-    if (!panel.sheets.empty() && panel.tex) panel.sharp = r.mipmappedCopy(panel.tex, panel.external, panel.pxW, panel.pxH, panel.sharp);
+    uiDirty = true;
+    if (!uiLayers && !panel.sheets.empty() && panel.tex) panel.sharp = r.mipmappedCopy(panel.tex, panel.external, panel.pxW, panel.pxH, panel.sharp);
+}
+
+std::vector<Interaction::UiQuad> Interaction::uiQuads() const {
+    std::vector<UiQuad> out;
+    if (!panel.visible) return out;
+    for (const Sheet& s : panel.sheets) out.push_back({sheetPose(s), s.w / s.pxPerM, s.h / s.pxPerM, s.x, s.y, s.w, s.h, false});
+    for (size_t k = 0; k < panel.popups.size() / 4; ++k) { Sheet s = panel.popupSheet(k);
+        out.push_back({sheetPose(s), s.w / s.pxPerM, s.h / s.pxPerM, s.x, s.y, s.w, s.h, true}); }
+    return out;
+}
+
+std::vector<V3> Interaction::uiCursors() const {
+    std::vector<V3> out;
+    for (int i = 0; i < 2; ++i) if (last[i].active && target[i].panel) out.push_back(last[i].aim.pos + forward(last[i].aim) * target[i].t);
+    return out;
 }
 
 void Interaction::updateMask(Renderer& r) {
@@ -500,7 +524,7 @@ void Interaction::render(Renderer& r, const M4& vp, V3 eye) {
         r.drawPanel(it->second.first, false, Pose{p + x * (w * 0.5f + 0.012f * dist) + y * (h * 0.7f), fromBasis(x, y, z), 1}, w, h, h * 0.25f, vp);
     }
     glEnable(GL_DEPTH_TEST);
-    if (panel.visible && panel.tex && !panel.sheets.empty()) {
+    if (panel.visible && panel.tex && !panel.sheets.empty() && !uiLayers) {
         // the UI's surfaces: drawn over the model (as windows over a 3D view), see-through where the UI draws nothing
         glDisable(GL_DEPTH_TEST);
         size_t np = panel.popups.size() / 4;
@@ -516,7 +540,7 @@ void Interaction::render(Renderer& r, const M4& vp, V3 eye) {
         r.holes.clear();
         for (size_t k = 0; k < np; ++k) draw(panel.popupSheet(k));
         glEnable(GL_DEPTH_TEST);
-    } else if (panel.visible && panel.tex) {
+    } else if (panel.visible && panel.tex && panel.sheets.empty()) {
         // a dark back plate with a slim border, then the UI itself
         static GLuint plate = 0;
         if (!plate) { const unsigned char px[4] = {14, 17, 21, 255}; plate = r.makeTexture(1, 1, px); }

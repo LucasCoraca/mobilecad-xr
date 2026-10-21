@@ -1,4 +1,6 @@
 #include "xr_session.h"
+#include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 
@@ -46,6 +48,10 @@ bool Headset::create(const PlatformInit& p, const char* appName, std::string* er
     if (!hasExtension(exts, gfxExt)) return fail("The OpenXR runtime has no OpenGL support");
     std::vector<const char*> enable{gfxExt};
     bool ptExt = hasExtension(exts, XR_FB_PASSTHROUGH_EXTENSION_NAME);
+#ifdef XR_FB_composition_layer_settings
+    layerSettings = hasExtension(exts, XR_FB_COMPOSITION_LAYER_SETTINGS_EXTENSION_NAME);
+    if (layerSettings) enable.push_back(XR_FB_COMPOSITION_LAYER_SETTINGS_EXTENSION_NAME);
+#endif
     if (ptExt) enable.push_back(XR_FB_PASSTHROUGH_EXTENSION_NAME);
 #ifdef __ANDROID__
     if (hasExtension(exts, XR_KHR_ANDROID_CREATE_INSTANCE_EXTENSION_NAME)) enable.push_back(XR_KHR_ANDROID_CREATE_INSTANCE_EXTENSION_NAME);
@@ -65,6 +71,7 @@ bool Headset::create(const PlatformInit& p, const char* appName, std::string* er
     XrSystemGetInfo sg{XR_TYPE_SYSTEM_GET_INFO}; sg.formFactor = XR_FORM_FACTOR_HEAD_MOUNTED_DISPLAY;
     if (XR_FAILED(xrGetSystem(instance, &sg, &system))) return fail("No headset is connected");
     XrSystemProperties sp{XR_TYPE_SYSTEM_PROPERTIES}; xrGetSystemProperties(instance, system, &sp); systemName = sp.systemName;
+    maxLayers = sp.graphicsProperties.maxLayerCount ? sp.graphicsProperties.maxLayerCount : 16;
 
     // graphics requirements must be queried before the session (spec); the GL context is the caller's
 #ifdef __ANDROID__
@@ -140,7 +147,10 @@ bool Headset::makeSwapchains() {
 #endif
     LOG("eye images: %d samples", samples);
     for (int e = 0; e < 2; ++e) {
-        Eye& eye = eyes[e]; eye.w = (int)views[e].recommendedImageRectWidth; eye.h = (int)views[e].recommendedImageRectHeight;
+        // 1.3x the recommended size (Quest 3 recommends less than its panels' resolution), within the maximum
+        Eye& eye = eyes[e];
+        eye.w = (int)std::min<float>(views[e].recommendedImageRectWidth * 1.3f, (float)views[e].maxImageRectWidth);
+        eye.h = (int)std::min<float>(views[e].recommendedImageRectHeight * 1.3f, (float)views[e].maxImageRectHeight);
         XrSwapchainCreateInfo sc{XR_TYPE_SWAPCHAIN_CREATE_INFO};
         sc.usageFlags = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT | XR_SWAPCHAIN_USAGE_SAMPLED_BIT;
         sc.format = colorFormat; sc.sampleCount = 1; sc.width = eye.w; sc.height = eye.h; sc.faceCount = 1; sc.arraySize = 1; sc.mipCount = 1;
@@ -170,6 +180,62 @@ bool Headset::makeSwapchains() {
     }
     eyeW = eyes[0].w; eyeH = eyes[0].h;
     return true;
+}
+
+bool Headset::makeChain(Chain& c, int w, int h) {
+    XrSwapchainCreateInfo sc{XR_TYPE_SWAPCHAIN_CREATE_INFO};
+    sc.usageFlags = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT | XR_SWAPCHAIN_USAGE_SAMPLED_BIT;
+    sc.format = colorFormat; sc.sampleCount = 1; sc.width = w; sc.height = h; sc.faceCount = 1; sc.arraySize = 1; sc.mipCount = 1;
+    XRCHECK(xrCreateSwapchain(session, &sc, &c.sc));
+    uint32_t ni = 0; xrEnumerateSwapchainImages(c.sc, 0, &ni, nullptr);
+#ifdef __ANDROID__
+    std::vector<XrSwapchainImageOpenGLESKHR> imgs(ni, {XR_TYPE_SWAPCHAIN_IMAGE_OPENGL_ES_KHR});
+#else
+    std::vector<XrSwapchainImageOpenGLKHR> imgs(ni, {XR_TYPE_SWAPCHAIN_IMAGE_OPENGL_KHR});
+#endif
+    XRCHECK(xrEnumerateSwapchainImages(c.sc, ni, &ni, (XrSwapchainImageBaseHeader*)imgs.data()));
+    for (auto& i : imgs) c.images.push_back(i.image);
+    c.w = w; c.h = h;
+    return true;
+}
+
+bool Headset::makeUiChains(int w, int h) {
+    if (!makeChain(uiBase, w, h) || !makeChain(uiFull, w, h) || !makeChain(cursorChain, 64, 64)) return false;
+    // the cursor: a white dot with a dark ring, premultiplied
+    std::vector<uint8_t> px(64 * 64 * 4, 0);
+    for (int y = 0; y < 64; ++y) for (int x = 0; x < 64; ++x) {
+        float d = std::hypot(x + 0.5f - 32, y + 0.5f - 32); uint8_t* p = &px[(y * 64 + x) * 4];
+        float a = std::max(0.f, std::min(1.f, 31.f - d)), inner = std::max(0.f, std::min(1.f, 22.f - d));
+        float v = inner * 255; p[0] = p[1] = p[2] = (uint8_t)(v * a); p[3] = (uint8_t)(a * 255);
+        if (!inner && a > 0) { p[0] = (uint8_t)(40 * a); p[1] = (uint8_t)(110 * a); p[2] = (uint8_t)(200 * a); }
+    }
+    uint32_t idx = 0; XrSwapchainImageAcquireInfo ai{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO}; xrAcquireSwapchainImage(cursorChain.sc, &ai, &idx);
+    XrSwapchainImageWaitInfo wi{XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO}; wi.timeout = XR_INFINITE_DURATION; xrWaitSwapchainImage(cursorChain.sc, &wi);
+    glBindTexture(GL_TEXTURE_2D, cursorChain.images[idx]); glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 64, 64, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
+    XrSwapchainImageReleaseInfo ri{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO}; xrReleaseSwapchainImage(cursorChain.sc, &ri);
+    LOG("UI as compositor layers: %dx%d%s", w, h, layerSettings ? ", supersampled + sharpened" : "");
+    return true;
+}
+
+/** Copies the UI image into the layers' swapchains when it changed: whole, and without its popups (they are layers). */
+void Headset::updateUi(Interaction& ia, Renderer& r) {
+    if (!ia.uiDirty) return;
+    ia.uiDirty = false;
+    std::vector<float> holes;
+    for (size_t k = 0; k + 3 < ia.panel.popups.size(); k += 4) { const float* p = &ia.panel.popups[k];
+        holes.insert(holes.end(), {p[0] / ia.panel.pxW, p[1] / ia.panel.pxH, (p[0] + p[2]) / ia.panel.pxW, (p[1] + p[3]) / ia.panel.pxH}); }
+    for (Chain* c : {&uiBase, &uiFull}) {
+        uint32_t idx = 0; XrSwapchainImageAcquireInfo ai{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO}; xrAcquireSwapchainImage(c->sc, &ai, &idx);
+        XrSwapchainImageWaitInfo wi{XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO}; wi.timeout = XR_INFINITE_DURATION; xrWaitSwapchainImage(c->sc, &wi);
+#ifndef __ANDROID__
+        if (srgb) glEnable(GL_FRAMEBUFFER_SRGB);                       // (OpenGL ES encodes sRGB targets by itself)
+#endif
+        r.drawImageInto(c->images[idx], c->w, c->h, ia.panel.tex, ia.panel.external, srgb ? 2.2f : 1.f, c == &uiBase ? holes : std::vector<float>{});
+#ifndef __ANDROID__
+        glDisable(GL_FRAMEBUFFER_SRGB);
+#endif
+        XrSwapchainImageReleaseInfo ri{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO}; xrReleaseSwapchainImage(c->sc, &ri);
+    }
 }
 
 bool Headset::makeActions() {
@@ -313,6 +379,9 @@ bool Headset::frame(Interaction& ia, Renderer& r) {
             passthroughOn = ia.passthrough;
         }
         ia.update(hin, dt);
+        // the UI's windows as compositor layers, once the app's UI is up (they need its size)
+        if (!uiTried && !ia.panel.sheets.empty() && ia.panel.tex) { uiTried = true; ia.uiLayers = makeUiChains(ia.panel.pxW, ia.panel.pxH); }
+        if (ia.uiLayers) updateUi(ia, r);
 
         XrViewLocateInfo li{XR_TYPE_VIEW_LOCATE_INFO}; li.viewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
         li.displayTime = fs.predictedDisplayTime; li.space = appSpace;
@@ -368,6 +437,39 @@ bool Headset::frame(Interaction& ia, Renderer& r) {
     std::vector<const XrCompositionLayerBaseHeader*> layers;
     if (room) layers.push_back((XrCompositionLayerBaseHeader*)&ptl);
     if (rendered) layers.push_back((XrCompositionLayerBaseHeader*)&layer);
+    // the UI's windows and popups over the scene, then the cursors on them
+    std::vector<XrCompositionLayerQuad> quads; quads.reserve(24);
+#ifdef XR_FB_composition_layer_settings
+    XrCompositionLayerSettingsFB settings{XR_TYPE_COMPOSITION_LAYER_SETTINGS_FB};
+    settings.layerFlags = XR_COMPOSITION_LAYER_SETTINGS_NORMAL_SUPER_SAMPLING_BIT_FB | XR_COMPOSITION_LAYER_SETTINGS_NORMAL_SHARPENING_BIT_FB;
+    const void* quadNext = layerSettings ? &settings : nullptr;
+#else
+    const void* quadNext = nullptr;
+#endif
+    auto toXr = [](const Pose& p) { XrPosef o; o.position = {p.pos.x, p.pos.y, p.pos.z}; o.orientation = {p.rot.x, p.rot.y, p.rot.z, p.rot.w}; return o; };
+    if (rendered && ia.uiLayers) {
+        for (const auto& q : ia.uiQuads()) {
+            if (layers.size() + quads.size() + 2 >= maxLayers) break;
+            XrCompositionLayerQuad l{XR_TYPE_COMPOSITION_LAYER_QUAD}; l.next = quadNext;
+            l.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT; l.space = appSpace; l.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
+            const Chain& c = q.popup ? uiFull : uiBase;
+            l.subImage.swapchain = c.sc;
+            l.subImage.imageRect = {{(int32_t)q.x, (int32_t)(c.h - (q.y + q.ph))}, {(int32_t)q.pw, (int32_t)q.ph}};   // GL images: from the bottom
+            l.pose = toXr(q.pose); l.size = {q.w, q.h};
+            quads.push_back(l);
+        }
+        for (V3 p : ia.uiCursors()) {
+            if (layers.size() + quads.size() >= maxLayers) break;
+            V3 z = norm(head.pos - p), x = norm(cross(V3{0, 1, 0}, z)); if (len(x) < 0.5f) x = {1, 0, 0}; V3 y = cross(z, x);
+            float d = std::max(len(head.pos - p), 0.1f), size = 0.012f * d;           // ~0.7 degrees
+            XrCompositionLayerQuad l{XR_TYPE_COMPOSITION_LAYER_QUAD};
+            l.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT; l.space = appSpace; l.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
+            l.subImage.swapchain = cursorChain.sc; l.subImage.imageRect = {{0, 0}, {64, 64}};
+            l.pose = toXr(Pose{p, fromBasis(x, y, z), 1}); l.size = {size, size};
+            quads.push_back(l);
+        }
+        for (auto& q : quads) layers.push_back((XrCompositionLayerBaseHeader*)&q);
+    }
     XrFrameEndInfo ei{XR_TYPE_FRAME_END_INFO}; ei.displayTime = fs.predictedDisplayTime;
     ei.environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE; ei.layerCount = (uint32_t)layers.size(); ei.layers = layers.data();
     xrEndFrame(session, &ei);
@@ -380,6 +482,8 @@ void Headset::destroy() {
         if (e.msFbo) glDeleteFramebuffers(1, &e.msFbo); if (e.msColor) glDeleteRenderbuffers(1, &e.msColor); e.msFbo = e.msColor = 0;
     }
     passthroughLayer = XR_NULL_HANDLE; passthrough = XR_NULL_HANDLE; passthroughOn = false;   // (destroyed with the session)
+    for (Chain* c : {&uiBase, &uiFull, &cursorChain}) { if (c->sc) xrDestroySwapchain(c->sc); *c = Chain{}; }
+    uiTried = false;
     for (int i = 0; i < 2; ++i) { if (aimSpace[i]) xrDestroySpace(aimSpace[i]); if (gripSpace[i]) xrDestroySpace(gripSpace[i]); aimSpace[i] = gripSpace[i] = XR_NULL_HANDLE; }
     if (appSpace) xrDestroySpace(appSpace); if (viewSpace) xrDestroySpace(viewSpace); appSpace = viewSpace = XR_NULL_HANDLE;
     if (actionSet) xrDestroyActionSet(actionSet); actionSet = XR_NULL_HANDLE;
