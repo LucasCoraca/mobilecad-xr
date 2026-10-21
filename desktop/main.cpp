@@ -167,7 +167,7 @@ int main(int argc, char** argv) {
     auto toHand = [](HandInput& c, const Pose& head, bool left, V3 offset) {
         if (!c.active) return;
         HandInput h; Pose palm = palmForRay(head, left, rotate(c.aim.rot, V3{0, 0, -1})); palm.pos = palm.pos + offset;
-        syntheticHand(h, palm, left, c.select, c.squeeze, c.context ? 1.f : 0.f); c = h;
+        syntheticHand(h, palm, left, c.select, c.squeeze, c.context ? 1.f : 0.f, 0.8f); c = h;   // (the other fingers curled, as when relaxed: a pinch is no grab)
     };
     float zoomFrom = 0; int scripted = 0;      // the script set the right hand as a controller (1) or posed the hands (2)
     float fitScale = 0; V3 movedFrom{}; bool movedSet = false, frozen = false, autoDone = false, clicked = false, badge1 = false, badge2 = false; int pokeFrames = 0; Pose frozenAim; size_t docBefore = 0;
@@ -198,7 +198,7 @@ int main(int argc, char** argv) {
                 for (int side = 0; side < 2; ++side) {
                     V3 c = apply(ia.model, ia.scene.center()), sh = shoulderPoint(head, side == 0);
                     Pose palm = palmForRay(head, side == 0, c - sh); palm.pos = palm.pos + right * ((side ? 1.f : -1.f) * (0.03f + 0.15f * k));
-                    syntheticHand(h[side], palm, side == 0, pinch ? 1.f : 0.f, 0);
+                    syntheticHand(h[side], palm, side == 0, pinch ? 1.f : 0.f, 0, 0, 0.8f);
                 }
                 if (t > 8.5 && !autoDone) {
                     steps[5].ok = zoomFrom > 0 && ia.model.scale / zoomFrom > 1.4f;

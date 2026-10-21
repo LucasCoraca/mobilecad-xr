@@ -83,6 +83,9 @@ private:
     bool makeEye(Eye& eye, int w, int h);
     /** Hand tracking (XR_EXT_hand_tracking; aim and pinch from XR_FB_hand_tracking_aim where there is one). */
     XrHandTrackerEXT trackers[2] = {XR_NULL_HANDLE, XR_NULL_HANDLE}; bool handAim = false;
+    /** XR_EXT_hand_interaction: the system's pinch / grasp as actions, while a hand (not a controller) is the input. */
+    bool handInteraction = false, handProfile[2] = {false, false};
+    void readProfiles();
     PFN_xrLocateHandJointsEXT locateJoints = nullptr; PFN_xrDestroyHandTrackerEXT destroyTracker = nullptr;
     void makeHandTrackers(bool enabled);
     XrActionSet actionSet = XR_NULL_HANDLE;

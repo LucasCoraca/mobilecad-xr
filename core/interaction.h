@@ -44,6 +44,8 @@ struct HandInput {
     Pose joints[kHandJoints]; float radii[kHandJoints] = {};
     bool runtimeAim = false;    // aim and pinch strengths from the runtime (XR_FB_hand_tracking_aim)
     float pinchIndex = 0, pinchMiddle = 0; bool menuGesture = false, systemGesture = false;
+    /** The system's own pinch and grasp for this hand (XR_EXT_hand_interaction: what the headset's own UI uses). */
+    bool sysGestures = false; float sysPinch = 0, sysGrasp = 0;
     bool noRay = false;         // no ray shown or used (the palm turned to the eyes: the menu gesture)
     bool poke = false;          // the index finger is at a window, touching it directly (set by Interaction; no ray shown)
 };
@@ -155,7 +157,7 @@ private:
     HandGestures gest[2];
     bool pokeTouch[2] = {false, false}; float pokeDepth[2] = {1, 1};
     bool pokeAt(V3 tip, float* depth, Pose* aim) const;
-    void handInput(HandInput hands[2]);
+    void handInput(HandInput hands[2], float dt);
     bool pinchZoom = false;
     GltfModel handModel[2], ctrlModel[2];
     struct Grab { bool on = false; Pose handStart, objStart; float t = 0; V3 aimStart; bool panel = false, plate = false; bool slide = false; V3 slideStart; int sheet = -1; };

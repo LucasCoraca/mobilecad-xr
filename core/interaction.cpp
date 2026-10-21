@@ -288,11 +288,11 @@ bool Interaction::pokeAt(V3 tip, float* depth, Pose* aim) const {
     *aim = a; *depth = d; return true;
 }
 
-void Interaction::handInput(HandInput hands[2]) {
+void Interaction::handInput(HandInput hands[2], float dt) {
     for (int i = 0; i < 2; ++i) {
         HandInput& h = hands[i];
         if (!h.active || !h.hand) { pokeTouch[i] = false; pokeDepth[i] = 1; continue; }
-        handGestures(h, headPose, i == 0, gest[i]);
+        handGestures(h, headPose, i == 0, gest[i], dt);
         // the index finger at a window: it touches it (a press when it reaches the surface coming from the front), no ray
         float d; Pose aim;
         bool near = pointerHand != i || pokeTouch[i] ? pokeAt(h.joints[JIndexTip].pos, &d, &aim) : false;
@@ -318,7 +318,7 @@ void Interaction::handInput(HandInput hands[2]) {
 
 void Interaction::update(const HandInput in[2], float dt) {
     HandInput hands[2] = {in[0], in[1]};
-    handInput(hands);
+    handInput(hands, dt);
     if (placedEmpty && !scene.empty()) placeModel(placeHead);
     bool trig[2], squeeze[2], host = (bool)onViewport;
     for (int i = 0; i < 2; ++i) {

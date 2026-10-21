@@ -57,6 +57,8 @@ bool Headset::create(const PlatformInit& p, const char* appName, std::string* er
     if (handExt) enable.push_back(XR_EXT_HAND_TRACKING_EXTENSION_NAME);
     handAim = handExt && hasExtension(exts, XR_FB_HAND_TRACKING_AIM_EXTENSION_NAME);
     if (handAim) enable.push_back(XR_FB_HAND_TRACKING_AIM_EXTENSION_NAME);
+    handInteraction = hasExtension(exts, XR_EXT_HAND_INTERACTION_EXTENSION_NAME);
+    if (handInteraction) enable.push_back(XR_EXT_HAND_INTERACTION_EXTENSION_NAME);
 #ifdef __ANDROID__
     if (hasExtension(exts, XR_KHR_ANDROID_CREATE_INSTANCE_EXTENSION_NAME)) enable.push_back(XR_KHR_ANDROID_CREATE_INSTANCE_EXTENSION_NAME);
     XrInstanceCreateInfoAndroidKHR android{XR_TYPE_INSTANCE_CREATE_INFO_ANDROID_KHR}; android.applicationVM = p.vm; android.applicationActivity = p.activity;
@@ -325,6 +327,12 @@ bool Headset::makeActions() {
         {aStick, pr(std::string(L) + "thumbstick")}, {aStick, pr(std::string(R) + "thumbstick")},
         {aMenu, pr(std::string(L) + "b/click")}, {aMenu, pr(std::string(R) + "b/click")},
         {aContext, pr(std::string(L) + "a/click")}, {aContext, pr(std::string(R) + "a/click")}});
+    if (handInteraction)   // hands: the system's pinch (its "select") and grasp, as on its own UI
+        suggest("/interaction_profiles/ext/hand_interaction_ext", {
+            {aAim, pr(std::string(L) + "aim/pose")}, {aAim, pr(std::string(R) + "aim/pose")},
+            {aGrip, pr(std::string(L) + "grip/pose")}, {aGrip, pr(std::string(R) + "grip/pose")},
+            {aSelect, pr(std::string(L) + "aim_activate_ext/value")}, {aSelect, pr(std::string(R) + "aim_activate_ext/value")},
+            {aSqueeze, pr(std::string(L) + "grasp_ext/value")}, {aSqueeze, pr(std::string(R) + "grasp_ext/value")}});
     for (int i = 0; i < 2; ++i) {
         XrActionSpaceCreateInfo sc{XR_TYPE_ACTION_SPACE_CREATE_INFO}; sc.subactionPath = hands[i]; sc.poseInActionSpace.orientation.w = 1;
         sc.action = aAim; XRCHECK(xrCreateActionSpace(session, &sc, &aimSpace[i]));
@@ -349,11 +357,22 @@ void Headset::pollEvents(bool* quit) {
             } else if (state == XR_SESSION_STATE_EXITING || state == XR_SESSION_STATE_LOSS_PENDING) {
                 if (quit) *quit = true;
             }
+        } else if (ev.type == XR_TYPE_EVENT_DATA_INTERACTION_PROFILE_CHANGED) {
+            readProfiles();
         } else if (ev.type == XR_TYPE_EVENT_DATA_INSTANCE_LOSS_PENDING) {
             if (quit) *quit = true;
         }
         ev = {XR_TYPE_EVENT_DATA_BUFFER};
     }
+}
+
+void Headset::readProfiles() {
+    XrPath hp = XR_NULL_PATH; xrStringToPath(instance, "/interaction_profiles/ext/hand_interaction_ext", &hp);
+    for (int i = 0; i < 2; ++i) {
+        XrInteractionProfileState st{XR_TYPE_INTERACTION_PROFILE_STATE};
+        handProfile[i] = XR_SUCCEEDED(xrGetCurrentInteractionProfile(session, hands[i], &st)) && st.interactionProfile == hp && hp != XR_NULL_PATH;
+    }
+    LOG("input: left %s, right %s", handProfile[0] ? "hand" : "controller", handProfile[1] ? "hand" : "controller");
 }
 
 void Headset::readHands(XrTime t, HandInput out[2]) {
@@ -386,7 +405,9 @@ void Headset::readHands(XrTime t, HandInput out[2]) {
         XrHandJointsLocateInfoEXT li{XR_TYPE_HAND_JOINTS_LOCATE_INFO_EXT}; li.baseSpace = appSpace; li.time = t;
         if (XR_FAILED(locateJoints(trackers[i], &li, &locs)) || !locs.isActive) continue;
         if (!(jl[XR_HAND_JOINT_PALM_EXT].locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT)) continue;
+        float sysPinch = h.select, sysGrasp = h.squeeze;
         h = {}; h.active = h.hand = true;
+        if (handProfile[i]) { h.sysGestures = true; h.sysPinch = sysPinch; h.sysGrasp = sysGrasp; }
         for (int k = 0; k < kHandJoints && k < (int)XR_HAND_JOINT_COUNT_EXT; ++k) {
             h.joints[k] = toPose(jl[k].pose); h.radii[k] = jl[k].radius;
             if (!(jl[k].locationFlags & XR_SPACE_LOCATION_ORIENTATION_VALID_BIT)) h.joints[k].rot = Q{};

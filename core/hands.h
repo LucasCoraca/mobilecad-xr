@@ -2,7 +2,7 @@
 //
 //   pinch (thumb + index) ......... trigger: touch the UI / the app's 3D view, tap = click, pinch + move = drag
 //   pinch (thumb + middle) ........ B / Y: the view's context menu (a right click)
-//   fist .......................... grip: grab and move the model / a window / the build plate (two fists: scale + turn)
+//   fist (held 0.15 s) ............ grip: grab and move the model / a window / the build plate (two fists: scale + turn)
 //   both hands pinching ........... pinch to zoom: scale and turn the model between the hands
 //   left palm towards you + pinch . menu (Quest's own menu gesture)
 //   index finger on a window ...... touches it directly (poke), as on a touch screen
@@ -27,6 +27,7 @@ struct HandInput;
 /** Gesture state of one hand between frames (hysteresis, the smoothed ray). */
 struct HandGestures {
     bool pinch = false, middle = false, fist = false, palmUp = false, init = false;
+    float fistT = 0;            // how long the hand has been closed without pinching
     V3 dir{0, 0, -1};
 };
 
@@ -34,11 +35,12 @@ struct HandGestures {
 V3 shoulderPoint(const Pose& head, bool left);
 /** Fills a tracked hand's controller input (aim, grip, select, squeeze, menu, context) from its joints, or from the
  *  runtime's own aim and pinch strengths when it gives them (`runtimeAim`). */
-void handGestures(HandInput& h, const Pose& head, bool left, HandGestures& g);
+void handGestures(HandInput& h, const Pose& head, bool left, HandGestures& g, float dt);
 
 /** A hand's joints posed from its palm (palm frame: -Z towards the fingers, +Y the back of the hand): open, or curled
- *  into a pinch (thumb to index / middle) or a fist. For tests and the simulator, where there are no hand trackers. */
-void syntheticHand(HandInput& h, const Pose& palm, bool left, float pinch, float fist, float middlePinch = 0);
+ *  into a pinch (thumb to index / middle) or a fist; `rest`: how far the middle, ring and little fingers curl anyway
+ *  (a relaxed hand pinching). For tests and the simulator, where there are no hand trackers. */
+void syntheticHand(HandInput& h, const Pose& palm, bool left, float pinch, float fist, float middlePinch = 0, float rest = 0);
 /** The palm pose that puts this synthetic hand's ray (handGestures, without the runtime's aim) along `dir` from the shoulder. */
 Pose palmForRay(const Pose& head, bool left, V3 dir, float reach = 0.42f);
 /** The palm pose that puts the open synthetic hand's index fingertip at `tip`, the finger pointing along `dir`. */

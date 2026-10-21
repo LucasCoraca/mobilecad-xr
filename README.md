@@ -80,11 +80,13 @@ following yours. Everything works the same, with the gestures standing in for th
 |---|---|
 | Point, then pinch (thumb + index) | The trigger: tap = click, pinch and move = drag, on the interface and on the model / the view. A ray from your shoulder through your hand shows where you point |
 | Touch a window with your index finger | Tap / drag it directly, like a touch screen (move the windows close to use them this way) |
-| Fist | The grip: grab the model, a window or the build plate's rim and carry it |
+| Fist (close your hand for a moment) | The grip: grab the model, a window or the build plate's rim and carry it. A pinch never turns into a grab |
 | Both hands pinching (or two fists) | Zoom and turn the model between your hands: pull them apart to grow it |
 | Pinch thumb + middle finger | The view's context menu (B / Y) |
 | Left palm towards you, pinch | Menu (A / X): put the windows back and the table in front of you |
 
+Pinch and grab are the headset's own (the same detection its system menus use, through `XR_EXT_hand_interaction`), and
+the ray is its own pointer (`XR_FB_hand_tracking_aim`); on runtimes without them they are read from the finger joints.
 The hands and the rays are drawn in a layer of their own over the windows, so a finger touching a window is seen in
 front of it; behind the model they are hidden by it.
 

@@ -22,21 +22,29 @@ static V3 dorsal(const HandInput& h, bool left) {
     return left ? n : n * -1.f;
 }
 
-void handGestures(HandInput& h, const Pose& head, bool left, HandGestures& g) {
+void handGestures(HandInput& h, const Pose& head, bool left, HandGestures& g, float dt) {
     const Pose* j = h.joints;
-    float palmLen = std::max(len(j[JMiddleProx].pos - j[JWrist].pos), 0.04f);
-    // curl: how close the middle, ring and little fingertips are to the palm, relative to the hand's size
-    float curl = (len(j[JMiddleTip].pos - j[JPalm].pos) + len(j[JRingTip].pos - j[JPalm].pos) + len(j[JLittleTip].pos - j[JPalm].pos)) / (3 * palmLen);
-    g.fist = g.fist ? curl < 0.85f : curl < 0.62f;
+    // pinch: the system's own (what its UI reacts to) when it gives it, else from the fingertips
     float dI = len(j[JThumbTip].pos - j[JIndexTip].pos), dM = len(j[JThumbTip].pos - j[JMiddleTip].pos);
-    if (h.runtimeAim) {
-        g.pinch = g.pinch ? h.pinchIndex > 0.5f : h.pinchIndex > 0.9f;
-        g.middle = g.middle ? h.pinchMiddle > 0.5f : (h.pinchMiddle > 0.9f && !g.pinch);
-    } else {
-        g.pinch = g.pinch ? dI < 0.032f : dI < 0.018f;
-        g.middle = g.middle ? dM < 0.032f : (dM < 0.018f && dI > 0.03f);
+    if (h.sysGestures) g.pinch = g.pinch ? h.sysPinch > 0.5f : h.sysPinch > 0.9f;
+    else if (h.runtimeAim) g.pinch = g.pinch ? h.pinchIndex > 0.5f : h.pinchIndex > 0.9f;
+    else g.pinch = g.pinch ? dI < 0.032f : dI < 0.018f;
+    if (h.runtimeAim) g.middle = g.middle ? h.pinchMiddle > 0.5f : (h.pinchMiddle > 0.9f && !g.pinch);
+    else g.middle = g.middle ? dM < 0.032f : (dM < 0.018f && dI > 0.03f);
+    // grab: the system's grasp, else all four fingers curled into the palm (a pinch curls the others, never the index)
+    bool closed;
+    if (h.sysGestures) closed = g.fist ? h.sysGrasp > 0.5f : h.sysGrasp > 0.9f;
+    else {
+        float palmLen = std::max(len(j[JMiddleProx].pos - j[JWrist].pos), 0.04f), curl = 0;
+        for (int tip : {JIndexTip, JMiddleTip, JRingTip, JLittleTip}) curl += len(j[tip].pos - j[JPalm].pos);
+        curl /= 4 * palmLen;
+        closed = g.fist ? curl < 0.85f : curl < 0.6f && dI > 0.025f;
     }
-    if (g.fist) g.pinch = g.middle = false;          // a fist is not a pinch, though the thumb may touch the index
+    // a pinch wins: a grab starts only once the hand has stayed closed, not pinching, for 0.15 s; held, it lasts until the
+    // hand opens (the thumb touching the index inside a fist is no pinch)
+    if (g.fist) g.fist = closed;
+    else { g.fistT = closed && !g.pinch && !g.middle ? g.fistT + dt : 0; g.fist = g.fistT >= 0.15f; }
+    if (g.fist) g.pinch = g.middle = false;
     // the palm turned towards the eyes: Quest's menu gesture (left hand); no ray then
     V3 n = dorsal(h, left), toHead = norm(head.pos - j[JPalm].pos);
     float facing = -dot(n, toHead);                  // > 0: the palm (not the back) faces the head
@@ -70,14 +78,14 @@ const Finger kFingers[4] = {
     {{0.022f, 0, 0.032f}, {0.027f, 0, -0.036f}, 0.032f, 0.020f, 0.020f, 0.0082f}};
 }
 
-void syntheticHand(HandInput& h, const Pose& palm, bool left, float pinch, float fist, float middlePinch) {
+void syntheticHand(HandInput& h, const Pose& palm, bool left, float pinch, float fist, float middlePinch, float rest) {
     float sx = left ? -1.f : 1.f;
     auto P = [&](V3 l) { return apply(Pose{palm.pos, palm.rot, 1}, V3{l.x * sx, l.y, l.z}); };
     V3 local[kHandJoints]; V3 dirs[kHandJoints]; float radius[kHandJoints];
     local[JPalm] = {0, 0, 0}; radius[JPalm] = 0.022f; local[JWrist] = {0, 0, 0.045f}; radius[JWrist] = 0.02f;
     for (int f = 0; f < 4; ++f) {
         const Finger& F = kFingers[f]; int b = JIndexMeta + f * 5;
-        float c = clamp01(fist + (f == 0 ? 0.45f * pinch : f == 1 ? 0.45f * middlePinch : 0.f));
+        float c = clamp01(fist + (f == 0 ? 0.45f * pinch : f == 1 ? 0.45f * middlePinch + rest : rest));
         float a[3] = {c * 1.45f, c * 1.6f, c * 1.05f}, L[3] = {F.l1, F.l2, F.l3}, th = 0;
         local[b] = F.meta; local[b + 1] = F.knuckle;
         for (int k = 0; k < 3; ++k) { th += a[k]; local[b + 2 + k] = local[b + 1 + k] + V3{0, -std::sin(th), -std::cos(th)} * L[k]; }
