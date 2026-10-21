@@ -64,8 +64,10 @@ finger on the phone you do in 3D with the trigger, with the same tools and the s
 | A / X | Put the windows back and the table in front of you | |
 | Scale badge (under the tool bars) | **TRUE SIZE**: the model at its real size, 1 mm = 1 mm · **FIT VIEW**: back to the scaled view · **PASSTHROUGH**: your room on / off | |
 
-Your controllers are shown in your hands as Quest 3 Touch Plus models, their trigger, grip, stick and buttons moving
-as you use them.
+With passthrough off, your controllers are shown in your hands as Quest 3 Touch Plus models, their trigger, grip, stick
+and buttons moving as you use them, and your hands as a hand model. In passthrough you see your real controllers and
+hands instead (the cameras' view of things that close is reprojected a few centimetres off, so a model laid over them
+never lines up); only the rays are drawn.
 
 ![The Quest 3 controllers in the room](docs/controllers.png)
 
@@ -84,7 +86,7 @@ following yours. Everything works the same, with the gestures standing in for th
 | Left palm towards you, pinch | Menu (A / X): put the windows back and the table in front of you |
 
 The hands and the rays are drawn in a layer of their own over the windows, so a finger touching a window is seen in
-front of it; behind the model they are hidden by it. In passthrough the hand model is see-through, over your real hand.
+front of it; behind the model they are hidden by it.
 
 ![Hands: the left one pointing at a window, the right one pinching](docs/hands.png)
 

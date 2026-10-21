@@ -638,12 +638,15 @@ void Interaction::renderPointers(Renderer& r, const M4& vp, V3 eye) {
             l.add(h.aim.pos + f * (h.hand ? 0.06f : 0.f), end, col);
             if (hit && (!t.panel || !uiLayers)) dot(end, t.panel ? (pointerHand == i ? V3{0.26f, 0.56f, 0.87f} : V3{1, 1, 1}) : V3{0.35f, 0.75f, 1.f});
         } else if (h.poke && !uiLayers && t.panel) dot(h.aim.pos + forward(h.aim) * t.t, pokeTouch[i] ? V3{0.26f, 0.56f, 0.87f} : V3{1, 1, 1});
+        // In passthrough your real hands and controllers are in view: no models over them (the cameras' view of things this
+        // close is reprojected a few cm off, so a model never lines up with the real thing); the rays and cursors stay.
+        if (room) continue;
         if (h.hand) {
-            // the hand model, its bones on the tracked joints; light and solid in VR, see-through over the real hand in passthrough
+            // the hand model, its bones on the tracked joints
             handModel[i].drawSkinned(r, vp, eye, [&](const std::string& name, Pose* p) {
                 for (int k = 1; k < kHandJoints; ++k) if (name == jointName(k)) { *p = Pose{h.joints[k].pos, h.joints[k].rot, 1}; return true; }
                 return false;
-            }, V3{0.86f, 0.88f, 0.92f}, room ? 0.55f : 0.95f);
+            }, V3{0.86f, 0.88f, 0.92f}, 0.95f);
         } else if (showControllers) {
             // the controller at its grip, its trigger, grip, stick and buttons moving as they are used
             ctrlModel[i].draw(r, h.grip, vp, eye, [&](const std::string& v) {
