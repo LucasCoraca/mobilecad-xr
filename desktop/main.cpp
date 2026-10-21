@@ -35,22 +35,17 @@ static void writePpm(const char* path, GLuint tex, int w, int h) {
     std::fclose(f); std::fprintf(stderr, "mcxr: wrote %s\n", path);
 }
 
-/** Orientation whose -Z points along `d` (for scripted aim poses). */
-static Q lookRot(V3 d) {
-    V3 z = norm(d * -1.f), x = norm(cross(V3{0, 1, 0}, z)), y = cross(z, x);
-    float tr = x.x + y.y + z.z;
-    if (tr > 0) { float s = std::sqrt(tr + 1) * 2; return qnorm(Q{(y.z - z.y) / s, (z.x - x.z) / s, (x.y - y.x) / s, s / 4}); }
-    return axisAngle(V3{0, 1, 0}, 3.14159f);
-}
 
 int main(int argc, char** argv) {
-    std::vector<std::string> files; const char* shot = nullptr; int shotFrames = 120; bool autotest = false, startTrue = false, sheets = false;
+    std::vector<std::string> files; const char* shot = nullptr; int shotFrames = 120; bool autotest = false, startTrue = false, sheets = false, hands = false, demo = false;
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
         if (a == "--screenshot" && i + 1 < argc) shot = argv[++i];
         else if (a == "--frames" && i + 1 < argc) shotFrames = std::atoi(argv[++i]);
         else if (a == "--autotest") autotest = true;
         else if (a == "--sheets") sheets = true;
+        else if (a == "--hands") hands = true;
+        else if (a == "--demo") demo = true;
         else if (a == "--true-size") startTrue = true;
         else if (DIR* d = opendir(a.c_str())) {
             while (dirent* e = readdir(d)) { std::string n = e->d_name; if (n.size() > 5 && n.substr(n.size() - 5) == ".mcxr") files.push_back(a + "/" + n); }
@@ -145,6 +140,11 @@ int main(int argc, char** argv) {
         }
     };
     ia.onMenu = [&] { load(current + 1); };
+    for (const char* m : {"hand-left", "hand-right", "touch-plus-left", "touch-plus-right"}) {   // run from the repository
+        FILE* f = std::fopen((std::string("assets/models/") + m + ".glb").c_str(), "rb"); if (!f) continue;
+        std::vector<uint8_t> b; uint8_t buf[65536]; size_t n; while ((n = std::fread(buf, 1, sizeof buf, f)) > 0) b.insert(b.end(), buf, buf + n);
+        std::fclose(f); ia.setModel(m, b);
+    }
     load(0);
 
     PlatformInit p; p.display = dpy; p.fbConfig = cfg; p.drawable = win; p.context = ctx;
@@ -157,14 +157,26 @@ int main(int argc, char** argv) {
     // session and the rendering): 1) click the model = pick  2) grab and carry it 25 cm  3) click the panel's "Next file"
     // 4) click the scale badge: true size (1 mm = 1 mm)  5) click it again: back to the fitted view
     struct Step { const char* what; bool ok = false; };
+    // --hands: the same with tracked hands (synthetic joints, read by the same gesture code as on the headset): pinch =
+    // trigger, fist = grip, the panel button pressed with the index finger, then 6) pinch with both hands to zoom
     std::vector<Step> steps{{"pick a face/edge on the model"}, {"grab + move the model 25 cm"}, {"click the panel's Next file button"},
                             {"scale badge: true size 1:1"}, {"scale badge: back to fit view"}};
-    float fitScale = 0; V3 movedFrom{}; bool movedSet = false, frozen = false, autoDone = false, clicked = false; Pose frozenAim; size_t docBefore = 0;
+    if (hands) { steps[0].what = "pinch: pick a face/edge"; steps[1].what = "fist: grab + move the model 25 cm";
+                 steps[2].what = "finger: press the Next file button"; steps.push_back({"both hands pinching: zoom"}); }
+    // a controller's input as a hand: the hand on the controller's ray, pinching for the trigger, a fist for the grip
+    auto toHand = [](HandInput& c, const Pose& head, bool left, V3 offset) {
+        if (!c.active) return;
+        HandInput h; Pose palm = palmForRay(head, left, rotate(c.aim.rot, V3{0, 0, -1})); palm.pos = palm.pos + offset;
+        syntheticHand(h, palm, left, c.select, c.squeeze, c.context ? 1.f : 0.f); c = h;
+    };
+    float zoomFrom = 0; int scripted = 0;      // the script set the right hand as a controller (1) or posed the hands (2)
+    float fitScale = 0; V3 movedFrom{}; bool movedSet = false, frozen = false, autoDone = false, clicked = false, badge1 = false, badge2 = false; int pokeFrames = 0; Pose frozenAim; size_t docBefore = 0;
     if (autotest) {
         hs.inputOverride = [&](HandInput h[2], const Pose& head, double t) {
             if (ia.scene.empty() || t < 1.0) return;
-            HandInput& r = h[1]; r = {}; r.active = true;
-            V3 from = head.pos + V3{0.15f, -0.25f, 0};
+            HandInput& r = h[1]; r = {}; r.active = true; h[0] = {};
+            V3 from = hands ? shoulderPoint(head, false) : head.pos + V3{0.15f, -0.25f, 0};
+            scripted = 1;
             if (t < 4.2) {
                 V3 target = apply(ia.model, ia.scene.center());
                 r.aim = {from, lookRot(target - from), 1};
@@ -177,18 +189,37 @@ int main(int argc, char** argv) {
                 }
                 if (t > 4.0 && !steps[1].ok) { float m = ia.model.pos.x - movedFrom.x; steps[1].ok = m > 0.2f && m < 0.3f; std::fprintf(stderr, "mcxr autotest: model moved %.3f m\n", m); }
                 if (t > 1.7 && !steps[0].ok) steps[0].ok = !ia.selected.empty();
+            } else if (t > 7.2 && hands) {
+                // both hands on the model, pinching, then drawn apart: the model grows between them
+                scripted = 2;
+                V3 f = rotate(head.rot, V3{0, 0, -1}); f.y = 0; f = norm(f); V3 right = cross(f, V3{0, 1, 0});
+                float k = (float)std::max(0.0, std::min(1.0, (t - 7.5) / 0.8)); bool pinch = t > 7.4 && t < 8.4;
+                if (t > 7.45 && !zoomFrom) zoomFrom = ia.model.scale;
+                for (int side = 0; side < 2; ++side) {
+                    V3 c = apply(ia.model, ia.scene.center()), sh = shoulderPoint(head, side == 0);
+                    Pose palm = palmForRay(head, side == 0, c - sh); palm.pos = palm.pos + right * ((side ? 1.f : -1.f) * (0.03f + 0.15f * k));
+                    syntheticHand(h[side], palm, side == 0, pinch ? 1.f : 0.f, 0);
+                }
+                if (t > 8.5 && !autoDone) {
+                    steps[5].ok = zoomFrom > 0 && ia.model.scale / zoomFrom > 1.4f;
+                    std::fprintf(stderr, "mcxr autotest: pinch zoom x%.2f\n", zoomFrom > 0 ? ia.model.scale / zoomFrom : 0.f);
+                    autoDone = true; bool all = true;
+                    for (auto& s : steps) { std::fprintf(stderr, "mcxr autotest: %-36s %s\n", s.what, s.ok ? "PASS" : "FAIL"); all &= s.ok; }
+                    std::fprintf(stderr, "mcxr autotest: %s\n", all ? "PASS" : "FAIL");
+                }
             } else if (t > 5.5) {
                 // the scale badge under the panel: click it twice
                 r.aim = {from, lookRot(ia.badgeButton() - from), 1}; r.grip = r.aim;
                 if (t > 5.6 && !fitScale) fitScale = ia.model.scale;
-                if ((t > 5.9 && t < 6.0) || (t > 6.6 && t < 6.7)) r.select = 1;
+                if ((t > 5.9 && !badge1) || (t > 6.6 && !badge2)) { r.select = 1; (badge1 ? badge2 : badge1) = true; }
                 if (t > 6.3 && !steps[3].ok) {
                     steps[3].ok = ia.trueScale && std::fabs(ia.model.scale - 0.001f) < 1e-7f && ia.scaleText() == "1:1";
                     std::fprintf(stderr, "mcxr autotest: true size, scale %s\n", ia.scaleText().c_str());
                 }
-                if (t > 7.0 && !autoDone) {
+                if (t > 7.0 && !steps[4].ok && !autoDone) {
                     steps[4].ok = !ia.trueScale && ia.model.scale == fitScale;
                     std::fprintf(stderr, "mcxr autotest: fit view, scale %s\n", ia.scaleText().c_str());
+                    if (hands) return;   // (the pinch zoom follows)
                     autoDone = true; bool all = true;
                     for (auto& s : steps) { std::fprintf(stderr, "mcxr autotest: %-36s %s\n", s.what, s.ok ? "PASS" : "FAIL"); all &= s.ok; }
                     std::fprintf(stderr, "mcxr autotest: %s\n", all ? "PASS" : "FAIL");
@@ -201,10 +232,39 @@ int main(int argc, char** argv) {
                 r.aim = {from, lookRot(target - from), 1}; r.grip = r.aim;
                 if (t > 4.4 && !docBefore) docBefore = (size_t)loads;
                 if (t > 4.8 && t < 4.9) r.select = 1;
-                if (t > 5.4) steps[2].ok = panelClicks == 1 && (size_t)loads == docBefore + 1;    // the button loaded the next file
+                if (hands) {   // the index finger: in front of the button, pressed onto it, back
+                    scripted = 2; V3 n = rotate(ia.panel.pose.rot, V3{0, 0, 1});
+                    bool press = t > 4.45 && pokeFrames < 2; if (press) ++pokeFrames;  // pressed for two frames, then back
+                    syntheticHand(r, palmForTip(false, target + n * (press ? -0.004f : 0.03f), n * -1.f), false, 0, 0);
+                }
+                if (t > 5.1) steps[2].ok = panelClicks == 1 && (size_t)loads == docBefore + 1;    // the button loaded the next file
             }
         };
     }
+    if (hands && autotest) {
+        auto script = hs.inputOverride;
+        hs.inputOverride = [&, script](HandInput h[2], const Pose& head, double t) {
+            scripted = 0; script(h, head, t);
+            if (scripted == 1) toHand(h[1], head, false, h[1].aim.pos - shoulderPoint(head, false));
+        };
+    }
+    // --demo: both hands held still in front of you (for a look at the controllers / hands), the right one pinching
+    if (demo)
+        hs.inputOverride = [&](HandInput h[2], const Pose& head, double t) {
+            V3 f = rotate(head.rot, V3{0, 0, -1}); f.y = 0; f = norm(f); V3 right = cross(f, V3{0, 1, 0}), up{0, 1, 0};
+            for (int i = 0; i < 2; ++i) {
+                float s = i ? 1.f : -1.f; HandInput& c = h[i]; c = {}; c.active = true;
+                V3 pos = head.pos + f * 0.36f + right * (0.13f * s) - up * 0.16f, aimDir = norm(f + right * (-0.12f * s) + up * 0.05f);
+                // a controller held naturally: its handle leans forward ~35 degrees, the aim runs straight ahead
+                V3 handle = norm(up * 0.82f + aimDir * 0.57f), z = handle * -1.f, x = norm(cross(up, z)); if (len(x) < 0.5f) x = right;
+                c.grip = Pose{pos, fromBasis(x, cross(z, x), z), 1}; c.aim = Pose{pos + handle * 0.05f + aimDir * 0.02f, lookRot(aimDir), 1};
+                c.select = i ? 1.f : 0.f; c.stickX = i ? 0.f : 0.7f;
+                if (hands) toHand(c, head, i == 0, pos - (shoulderPoint(head, i == 0) + norm(aimDir) * 0.42f));
+            }
+            (void)t;
+        };
+    else if (hands && !autotest)
+        hs.inputOverride = [&](HandInput h[2], const Pose& head, double) { for (int i = 0; i < 2; ++i) toHand(h[i], head, i == 0, V3{}); };
     bool quit = false; int rendered = 0;
     while (!quit) {
         while (XPending(dpy)) {

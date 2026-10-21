@@ -53,6 +53,10 @@ bool Headset::create(const PlatformInit& p, const char* appName, std::string* er
     if (layerSettings) enable.push_back(XR_FB_COMPOSITION_LAYER_SETTINGS_EXTENSION_NAME);
 #endif
     if (ptExt) enable.push_back(XR_FB_PASSTHROUGH_EXTENSION_NAME);
+    bool handExt = hasExtension(exts, XR_EXT_HAND_TRACKING_EXTENSION_NAME);
+    if (handExt) enable.push_back(XR_EXT_HAND_TRACKING_EXTENSION_NAME);
+    handAim = handExt && hasExtension(exts, XR_FB_HAND_TRACKING_AIM_EXTENSION_NAME);
+    if (handAim) enable.push_back(XR_FB_HAND_TRACKING_AIM_EXTENSION_NAME);
 #ifdef __ANDROID__
     if (hasExtension(exts, XR_KHR_ANDROID_CREATE_INSTANCE_EXTENSION_NAME)) enable.push_back(XR_KHR_ANDROID_CREATE_INSTANCE_EXTENSION_NAME);
     XrInstanceCreateInfoAndroidKHR android{XR_TYPE_INSTANCE_CREATE_INFO_ANDROID_KHR}; android.applicationVM = p.vm; android.applicationActivity = p.activity;
@@ -70,7 +74,10 @@ bool Headset::create(const PlatformInit& p, const char* appName, std::string* er
 
     XrSystemGetInfo sg{XR_TYPE_SYSTEM_GET_INFO}; sg.formFactor = XR_FORM_FACTOR_HEAD_MOUNTED_DISPLAY;
     if (XR_FAILED(xrGetSystem(instance, &sg, &system))) return fail("No headset is connected");
-    XrSystemProperties sp{XR_TYPE_SYSTEM_PROPERTIES}; xrGetSystemProperties(instance, system, &sp); systemName = sp.systemName;
+    XrSystemHandTrackingPropertiesEXT htp{XR_TYPE_SYSTEM_HAND_TRACKING_PROPERTIES_EXT};
+    XrSystemProperties sp{XR_TYPE_SYSTEM_PROPERTIES}; if (handExt) sp.next = &htp;
+    xrGetSystemProperties(instance, system, &sp); systemName = sp.systemName;
+    handExt = handExt && htp.supportsHandTracking;
     maxLayers = sp.graphicsProperties.maxLayerCount ? sp.graphicsProperties.maxLayerCount : 16;
 
     // graphics requirements must be queried before the session (spec); the GL context is the caller's
@@ -103,6 +110,7 @@ bool Headset::create(const PlatformInit& p, const char* appName, std::string* er
     rs.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_VIEW; xrCreateReferenceSpace(session, &rs, &viewSpace);
     if (!makeSwapchains()) return fail("Could not create the eye images");
     if (!makeActions()) return fail("Could not set up the controllers");
+    makeHandTrackers(handExt);
     LOG("runtime %s, system %s, %dx%d per eye, %s space", runtimeName.c_str(), systemName.c_str(), eyes[0].w, eyes[0].h,
         type == XR_REFERENCE_SPACE_TYPE_STAGE ? "stage" : "local");
     return true;
@@ -122,6 +130,52 @@ void Headset::makePassthrough(bool enabled) {
     lc.passthrough = passthrough; lc.flags = XR_PASSTHROUGH_IS_RUNNING_AT_CREATION_BIT_FB; lc.purpose = XR_PASSTHROUGH_LAYER_PURPOSE_RECONSTRUCTION_FB;
     if (XR_FAILED(createLayer(session, &lc, &passthroughLayer))) { passthroughLayer = XR_NULL_HANDLE; LOG("passthrough: no layer"); return; }
     passthroughOn = true; LOG("passthrough: ready");
+}
+
+void Headset::makeHandTrackers(bool enabled) {
+    if (!enabled) { LOG("hand tracking: not available"); return; }
+    PFN_xrCreateHandTrackerEXT create = nullptr;
+    xrGetInstanceProcAddr(instance, "xrCreateHandTrackerEXT", (PFN_xrVoidFunction*)&create);
+    xrGetInstanceProcAddr(instance, "xrLocateHandJointsEXT", (PFN_xrVoidFunction*)&locateJoints);
+    xrGetInstanceProcAddr(instance, "xrDestroyHandTrackerEXT", (PFN_xrVoidFunction*)&destroyTracker);
+    if (!create || !locateJoints) return;
+    for (int i = 0; i < 2; ++i) {
+        XrHandTrackerCreateInfoEXT ci{XR_TYPE_HAND_TRACKER_CREATE_INFO_EXT};
+        ci.hand = i == 0 ? XR_HAND_LEFT_EXT : XR_HAND_RIGHT_EXT; ci.handJointSet = XR_HAND_JOINT_SET_DEFAULT_EXT;
+        if (XR_FAILED(create(session, &ci, &trackers[i]))) trackers[i] = XR_NULL_HANDLE;
+    }
+    LOG("hand tracking: %s%s", trackers[0] && trackers[1] ? "ready" : "no trackers", handAim ? ", runtime aim" : "");
+}
+
+bool Headset::makeEye(Eye& eye, int w, int h) {
+    eye.w = w; eye.h = h;
+    XrSwapchainCreateInfo sc{XR_TYPE_SWAPCHAIN_CREATE_INFO};
+    sc.usageFlags = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT | XR_SWAPCHAIN_USAGE_SAMPLED_BIT;
+    sc.format = colorFormat; sc.sampleCount = 1; sc.width = eye.w; sc.height = eye.h; sc.faceCount = 1; sc.arraySize = 1; sc.mipCount = 1;
+    XRCHECK(xrCreateSwapchain(session, &sc, &eye.swapchain));
+    uint32_t ni = 0; xrEnumerateSwapchainImages(eye.swapchain, 0, &ni, nullptr);
+#ifdef __ANDROID__
+    std::vector<XrSwapchainImageOpenGLESKHR> imgs(ni, {XR_TYPE_SWAPCHAIN_IMAGE_OPENGL_ES_KHR});
+#else
+    std::vector<XrSwapchainImageOpenGLKHR> imgs(ni, {XR_TYPE_SWAPCHAIN_IMAGE_OPENGL_KHR});
+#endif
+    XRCHECK(xrEnumerateSwapchainImages(eye.swapchain, ni, &ni, (XrSwapchainImageBaseHeader*)imgs.data()));
+    for (auto& i : imgs) eye.images.push_back(i.image);
+    glGenRenderbuffers(1, &eye.depth); glBindRenderbuffer(GL_RENDERBUFFER, eye.depth);
+#ifdef __ANDROID__
+    if (samples > 1) rbStorageMs(GL_RENDERBUFFER, samples, GL_DEPTH_COMPONENT24, eye.w, eye.h);
+    else glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, eye.w, eye.h);
+#else
+    glRenderbufferStorageMultisample(GL_RENDERBUFFER, samples, GL_DEPTH_COMPONENT24, eye.w, eye.h);
+    glGenRenderbuffers(1, &eye.msColor); glBindRenderbuffer(GL_RENDERBUFFER, eye.msColor);
+    glRenderbufferStorageMultisample(GL_RENDERBUFFER, samples, srgb ? GL_SRGB8_ALPHA8 : GL_RGBA8, eye.w, eye.h);
+    glGenFramebuffers(1, &eye.msFbo); glBindFramebuffer(GL_FRAMEBUFFER, eye.msFbo);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, eye.msColor);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, eye.depth);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+#endif
+    glGenFramebuffers(1, &eye.fbo);
+    return true;
 }
 
 bool Headset::makeSwapchains() {
@@ -148,36 +202,12 @@ bool Headset::makeSwapchains() {
     LOG("eye images: %d samples", samples);
     for (int e = 0; e < 2; ++e) {
         // 1.3x the recommended size (Quest 3 recommends less than its panels' resolution), within the maximum
-        Eye& eye = eyes[e];
-        eye.w = (int)std::min<float>(views[e].recommendedImageRectWidth * 1.3f, (float)views[e].maxImageRectWidth);
-        eye.h = (int)std::min<float>(views[e].recommendedImageRectHeight * 1.3f, (float)views[e].maxImageRectHeight);
-        XrSwapchainCreateInfo sc{XR_TYPE_SWAPCHAIN_CREATE_INFO};
-        sc.usageFlags = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT | XR_SWAPCHAIN_USAGE_SAMPLED_BIT;
-        sc.format = colorFormat; sc.sampleCount = 1; sc.width = eye.w; sc.height = eye.h; sc.faceCount = 1; sc.arraySize = 1; sc.mipCount = 1;
-        XRCHECK(xrCreateSwapchain(session, &sc, &eye.swapchain));
-        uint32_t ni = 0; xrEnumerateSwapchainImages(eye.swapchain, 0, &ni, nullptr);
-#ifdef __ANDROID__
-        std::vector<XrSwapchainImageOpenGLESKHR> imgs(ni, {XR_TYPE_SWAPCHAIN_IMAGE_OPENGL_ES_KHR});
-#else
-        std::vector<XrSwapchainImageOpenGLKHR> imgs(ni, {XR_TYPE_SWAPCHAIN_IMAGE_OPENGL_KHR});
-#endif
-        XRCHECK(xrEnumerateSwapchainImages(eye.swapchain, ni, &ni, (XrSwapchainImageBaseHeader*)imgs.data()));
-        for (auto& i : imgs) eye.images.push_back(i.image);
-        glGenRenderbuffers(1, &eye.depth); glBindRenderbuffer(GL_RENDERBUFFER, eye.depth);
-#ifdef __ANDROID__
-        if (samples > 1) rbStorageMs(GL_RENDERBUFFER, samples, GL_DEPTH_COMPONENT24, eye.w, eye.h);
-        else glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, eye.w, eye.h);
-#else
-        glRenderbufferStorageMultisample(GL_RENDERBUFFER, samples, GL_DEPTH_COMPONENT24, eye.w, eye.h);
-        glGenRenderbuffers(1, &eye.msColor); glBindRenderbuffer(GL_RENDERBUFFER, eye.msColor);
-        glRenderbufferStorageMultisample(GL_RENDERBUFFER, samples, srgb ? GL_SRGB8_ALPHA8 : GL_RGBA8, eye.w, eye.h);
-        glGenFramebuffers(1, &eye.msFbo); glBindFramebuffer(GL_FRAMEBUFFER, eye.msFbo);
-        glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, eye.msColor);
-        glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, eye.depth);
-        glBindFramebuffer(GL_FRAMEBUFFER, 0);
-#endif
-        glGenFramebuffers(1, &eye.fbo);
+        int w = (int)std::min<float>(views[e].recommendedImageRectWidth * 1.3f, (float)views[e].maxImageRectWidth);
+        int h = (int)std::min<float>(views[e].recommendedImageRectHeight * 1.3f, (float)views[e].maxImageRectHeight);
+        if (!makeEye(eyes[e], w, h)) return false;
     }
+    overOk = makeEye(over[0], views[0].recommendedImageRectWidth, views[0].recommendedImageRectHeight) &&
+             makeEye(over[1], views[1].recommendedImageRectWidth, views[1].recommendedImageRectHeight);
     eyeW = eyes[0].w; eyeH = eyes[0].h;
     return true;
 }
@@ -348,6 +378,25 @@ void Headset::readHands(XrTime t, HandInput out[2]) {
         gi.action = aMenu; if (XR_SUCCEEDED(xrGetActionStateBoolean(session, &gi, &b)) && b.isActive) h.menu = b.currentState;
         b = {XR_TYPE_ACTION_STATE_BOOLEAN};
         gi.action = aContext; if (XR_SUCCEEDED(xrGetActionStateBoolean(session, &gi, &b)) && b.isActive) h.context = b.currentState;
+        // a tracked hand (the runtime tracks hands while no controller is held): its joints replace that side's input
+        if (!trackers[i] || !locateJoints) continue;
+        XrHandJointLocationEXT jl[XR_HAND_JOINT_COUNT_EXT];
+        XrHandJointLocationsEXT locs{XR_TYPE_HAND_JOINT_LOCATIONS_EXT}; locs.jointCount = XR_HAND_JOINT_COUNT_EXT; locs.jointLocations = jl;
+        XrHandTrackingAimStateFB aim{XR_TYPE_HAND_TRACKING_AIM_STATE_FB}; if (handAim) locs.next = &aim;
+        XrHandJointsLocateInfoEXT li{XR_TYPE_HAND_JOINTS_LOCATE_INFO_EXT}; li.baseSpace = appSpace; li.time = t;
+        if (XR_FAILED(locateJoints(trackers[i], &li, &locs)) || !locs.isActive) continue;
+        if (!(jl[XR_HAND_JOINT_PALM_EXT].locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT)) continue;
+        h = {}; h.active = h.hand = true;
+        for (int k = 0; k < kHandJoints && k < (int)XR_HAND_JOINT_COUNT_EXT; ++k) {
+            h.joints[k] = toPose(jl[k].pose); h.radii[k] = jl[k].radius;
+            if (!(jl[k].locationFlags & XR_SPACE_LOCATION_ORIENTATION_VALID_BIT)) h.joints[k].rot = Q{};
+        }
+        if (handAim && (aim.status & XR_HAND_TRACKING_AIM_VALID_BIT_FB)) {
+            h.runtimeAim = true; h.aim = toPose(aim.aimPose);
+            h.pinchIndex = aim.pinchStrengthIndex; h.pinchMiddle = aim.pinchStrengthMiddle;
+            h.menuGesture = (aim.status & XR_HAND_TRACKING_AIM_MENU_PRESSED_BIT_FB) != 0;
+            h.systemGesture = (aim.status & XR_HAND_TRACKING_AIM_SYSTEM_GESTURE_BIT_FB) != 0;
+        }
     }
 }
 
@@ -358,7 +407,9 @@ bool Headset::frame(Interaction& ia, Renderer& r) {
     XrFrameBeginInfo bi{XR_TYPE_FRAME_BEGIN_INFO}; xrBeginFrame(session, &bi);
     XrCompositionLayerProjectionView pv[2] = {{XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW}, {XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW}};
     XrCompositionLayerProjection layer{XR_TYPE_COMPOSITION_LAYER_PROJECTION};
-    bool rendered = false;
+    XrCompositionLayerProjectionView opv[2] = {{XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW}, {XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW}};
+    XrCompositionLayerProjection overLayer{XR_TYPE_COMPOSITION_LAYER_PROJECTION};
+    bool rendered = false, overRendered = false;
     if (fs.shouldRender) {
         float dt = lastTime ? (float)((fs.predictedDisplayTime - lastTime) * 1e-9) : 0.f; lastTime = fs.predictedDisplayTime;
         if (dt < 0 || dt > 0.1f) dt = 1.f / 72.f;
@@ -378,6 +429,7 @@ bool Headset::frame(Interaction& ia, Renderer& r) {
             if (ia.passthrough) ptStart(passthrough); else ptPause(passthrough);
             passthroughOn = ia.passthrough;
         }
+        ia.headPose = head;
         ia.update(hin, dt);
         // the UI's windows as compositor layers, once the app's UI is up (they need its size)
         if (!uiTried && !ia.panel.sheets.empty() && ia.panel.tex) { uiTried = true; ia.uiLayers = makeUiChains(ia.panel.pxW, ia.panel.pxH); }
@@ -424,6 +476,49 @@ bool Headset::frame(Interaction& ia, Renderer& r) {
                 pv[e].pose = views[e].pose; pv[e].fov = views[e].fov;
                 pv[e].subImage.swapchain = eye.swapchain; pv[e].subImage.imageRect = {{0, 0}, {eye.w, eye.h}};
             }
+            ia.pointersSeparate = overOk && ia.uiLayers;
+            if (ia.pointersSeparate) {
+                // the hands' layer: transparent, the model's depth first so a hand behind the model is hidden by it
+                bool st = r.seeThrough; r.seeThrough = true;
+                for (int e = 0; e < 2; ++e) {
+                    Eye& eye = over[e]; uint32_t idx = 0;
+                    XrSwapchainImageAcquireInfo ai{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO}; xrAcquireSwapchainImage(eye.swapchain, &ai, &idx);
+                    XrSwapchainImageWaitInfo wti{XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO}; wti.timeout = XR_INFINITE_DURATION; xrWaitSwapchainImage(eye.swapchain, &wti);
+                    glBindFramebuffer(GL_FRAMEBUFFER, eye.fbo);
+#ifdef __ANDROID__
+                    if (samples > 1) fbTex2DMs(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, eye.images[idx], 0, samples);
+                    else glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, eye.images[idx], 0);
+                    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, eye.depth);
+                    GLuint target = eye.fbo;
+#else
+                    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, eye.images[idx], 0);
+                    GLuint target = eye.msFbo;
+#endif
+                    Pose ep = toPose(views[e].pose);
+                    M4 proj = projectionFov(views[e].fov.angleLeft, views[e].fov.angleRight, views[e].fov.angleUp, views[e].fov.angleDown, 0.02f, 50.f);
+                    M4 vp = mul(proj, viewFrom(ep));
+                    r.beginView(target, 0, 0, eye.w, eye.h, true);
+                    if (!ia.scene.empty()) {
+                        glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
+                        r.drawScene(ia.scene, ia.model, vp, ep.pos, ElemRef{}, {}, 1.f);
+                        glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+                    }
+                    ia.renderPointers(r, vp, ep.pos);
+#ifdef __ANDROID__
+                    const GLenum discard[] = {GL_DEPTH_ATTACHMENT}; glInvalidateFramebuffer(GL_FRAMEBUFFER, 1, discard);
+#else
+                    glBindFramebuffer(GL_READ_FRAMEBUFFER, eye.msFbo); glBindFramebuffer(GL_DRAW_FRAMEBUFFER, eye.fbo);
+                    glBlitFramebuffer(0, 0, eye.w, eye.h, 0, 0, eye.w, eye.h, GL_COLOR_BUFFER_BIT, GL_NEAREST);
+#endif
+                    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+                    XrSwapchainImageReleaseInfo ri{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO}; xrReleaseSwapchainImage(eye.swapchain, &ri);
+                    opv[e].pose = views[e].pose; opv[e].fov = views[e].fov;
+                    opv[e].subImage.swapchain = eye.swapchain; opv[e].subImage.imageRect = {{0, 0}, {eye.w, eye.h}};
+                }
+                r.seeThrough = st;
+                overLayer.space = appSpace; overLayer.viewCount = 2; overLayer.views = opv; overRendered = true;
+                overLayer.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
+            }
 #ifndef __ANDROID__
             glDisable(GL_FRAMEBUFFER_SRGB);
 #endif
@@ -449,7 +544,7 @@ bool Headset::frame(Interaction& ia, Renderer& r) {
     auto toXr = [](const Pose& p) { XrPosef o; o.position = {p.pos.x, p.pos.y, p.pos.z}; o.orientation = {p.rot.x, p.rot.y, p.rot.z, p.rot.w}; return o; };
     if (rendered && ia.uiLayers) {
         for (const auto& q : ia.uiQuads()) {
-            if (layers.size() + quads.size() + 2 >= maxLayers) break;
+            if (layers.size() + quads.size() + 3 >= maxLayers) break;
             XrCompositionLayerQuad l{XR_TYPE_COMPOSITION_LAYER_QUAD}; l.next = quadNext;
             l.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT; l.space = appSpace; l.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
             const Chain& c = q.popup ? uiFull : uiBase;
@@ -459,7 +554,7 @@ bool Headset::frame(Interaction& ia, Renderer& r) {
             quads.push_back(l);
         }
         for (V3 p : ia.uiCursors()) {
-            if (layers.size() + quads.size() >= maxLayers) break;
+            if (layers.size() + quads.size() + 1 >= maxLayers) break;
             V3 z = norm(head.pos - p), x = norm(cross(V3{0, 1, 0}, z)); if (len(x) < 0.5f) x = {1, 0, 0}; V3 y = cross(z, x);
             float d = std::max(len(head.pos - p), 0.1f), size = 0.012f * d;           // ~0.7 degrees
             XrCompositionLayerQuad l{XR_TYPE_COMPOSITION_LAYER_QUAD};
@@ -470,6 +565,7 @@ bool Headset::frame(Interaction& ia, Renderer& r) {
         }
         for (auto& q : quads) layers.push_back((XrCompositionLayerBaseHeader*)&q);
     }
+    if (rendered && overRendered) layers.push_back((XrCompositionLayerBaseHeader*)&overLayer);   // the hands, over everything
     XrFrameEndInfo ei{XR_TYPE_FRAME_END_INFO}; ei.displayTime = fs.predictedDisplayTime;
     ei.environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE; ei.layerCount = (uint32_t)layers.size(); ei.layers = layers.data();
     xrEndFrame(session, &ei);
@@ -477,10 +573,13 @@ bool Headset::frame(Interaction& ia, Renderer& r) {
 }
 
 void Headset::destroy() {
-    for (Eye& e : eyes) {
+    for (Eye* ep : {&eyes[0], &eyes[1], &over[0], &over[1]}) { Eye& e = *ep;
         if (e.swapchain) xrDestroySwapchain(e.swapchain); e.swapchain = XR_NULL_HANDLE;
         if (e.msFbo) glDeleteFramebuffers(1, &e.msFbo); if (e.msColor) glDeleteRenderbuffers(1, &e.msColor); e.msFbo = e.msColor = 0;
+        e.images.clear();
     }
+    overOk = false;
+    for (auto& t : trackers) { if (t && destroyTracker) destroyTracker(t); t = XR_NULL_HANDLE; }
     passthroughLayer = XR_NULL_HANDLE; passthrough = XR_NULL_HANDLE; passthroughOn = false;   // (destroyed with the session)
     for (Chain* c : {&uiBase, &uiFull, &cursorChain}) { if (c->sc) xrDestroySwapchain(c->sc); *c = Chain{}; }
     uiTried = false;

@@ -4,4 +4,10 @@
     <uses-feature android:name="android.hardware.vr.headtracking" android:required="true" android:version="1" />
     <!-- passthrough: the room behind the model (XR_FB_passthrough) -->
     <uses-feature android:name="com.oculus.feature.PASSTHROUGH" android:required="false" />
+    <!-- hand tracking (XR_EXT_hand_tracking, XR_FB_hand_tracking_aim): use it without the controllers -->
+    <uses-feature android:name="oculus.software.handtracking" android:required="false" />
+    <uses-permission android:name="com.oculus.permission.HAND_TRACKING" />
+    <application>
+        <meta-data android:name="com.oculus.handtracking.frequency" android:value="HIGH" />
+    </application>
 </manifest>

@@ -34,6 +34,14 @@ inline Q fromBasis(V3 x, V3 y, V3 z) {
     float s = std::sqrt(1 + z.z - x.x - y.y) * 2; return qnorm(Q{(z.x + x.z) / s, (z.y + y.z) / s, s / 4, (x.y - y.x) / s});
 }
 
+/** Orientation whose -Z points along `d`, +Y as close to world up as it can be. */
+inline Q lookRot(V3 d) {
+    V3 z = norm(d * -1.f), x = cross(V3{0, 1, 0}, z);
+    x = len(x) < 1e-4f ? V3{1, 0, 0} : norm(x);
+    return fromBasis(x, cross(z, x), z);
+}
+inline V3 lerp(V3 a, V3 b, float t) { return a + (b - a) * t; }
+
 /** Rigid transform with uniform scale: p' = pos + rot * (scale * p). */
 struct Pose { V3 pos; Q rot; float scale = 1; };
 inline V3 apply(const Pose& t, V3 p) { return t.pos + rotate(t.rot, p * t.scale); }

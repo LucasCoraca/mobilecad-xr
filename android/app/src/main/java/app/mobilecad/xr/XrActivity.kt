@@ -74,6 +74,7 @@ class XrActivity : ComponentActivity() {
     private external fun nativeSetSketchLabels(pixels: java.nio.ByteBuffer?, w: Int, h: Int, labels: FloatArray)
     private external fun nativeModelScale(): Float
     private external fun nativeSetPopups(rects: FloatArray)
+    private external fun nativeSetModel(name: String, glb: ByteArray)
     private external fun nativeEndScene(place: Boolean)
     private external fun nativeSetSelection(objs: Array<String>, subs: Array<String>)
     private external fun nativePreviewInit()
@@ -92,6 +93,9 @@ class XrActivity : ComponentActivity() {
             text = "MobileCAD XR\nPut on your headset"
         })
         nativeAttach()
+        // the hand and Quest 3 controller models (WebXR input profiles, MIT: assets/models)
+        for (m in listOf("hand-left", "hand-right", "touch-plus-left", "touch-plus-right"))
+            runCatching { nativeSetModel(m, assets.open("models/$m.glb").use { it.readBytes() }) }
         layoutPanel()
         nativeStartXr()
         syncScene()
@@ -152,7 +156,7 @@ class XrActivity : ComponentActivity() {
                 val a = e[0].toInt()
                 // with a menu or dialog open, a press on the model is a touch outside it (it closes, as on a touch screen)
                 if (a == 0) modal()?.let { w -> outsideTouch(w); swallow = true }
-                if (swallow) { if (a == 2) swallow = false; if (a <= 2) continue }
+                if (swallow) { if (a == 2 || a == 5) swallow = false; if (a <= 2 || a == 5) continue }
                 v.xrPointer(a, floatArrayOf(e[1], e[2], e[3]), floatArrayOf(e[4], e[5], e[6]), e[7])
             }
         }

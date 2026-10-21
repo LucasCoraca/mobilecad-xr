@@ -14,6 +14,7 @@
 // the sketcher, Draft points, drag arrows) works on the model in the room; the grip moves the model,
 // B / Y opens the view's context menu. The app sends back what its view draws: preselection, overlay, the sketch.
 //   scale badge (under the panel): shows the model's scale; its button switches true size (1 mm = 1 mm) on / off
+//   hands (no controllers): see hands.h; pinch = trigger, fist = grip, an index finger touches the windows directly
 //   build plate: a tabletop on the model's ground plane (FreeCAD's XY plane) around its origin, with a grid and the axes;
 //                the model stands on it. Its rim is a handle: grip on the rim picks the table up and carries it (it
 //                turns with your wrist and stays level), trigger on the rim slides it along where the ray points
@@ -22,6 +23,8 @@
 #include <map>
 #include <string>
 #include <vector>
+#include "gltf_model.h"
+#include "hands.h"
 #include "renderer.h"
 #include "scene.h"
 #include "xmath.h"
@@ -36,6 +39,13 @@ struct HandInput {
     float stickX = 0, stickY = 0;
     bool menu = false;          // menu / A / X button
     bool context = false;       // B / Y button: the view's context menu
+    // a tracked hand (no controller in it): its joints (world; radius in m), the rest read from them (handGestures)
+    bool hand = false;
+    Pose joints[kHandJoints]; float radii[kHandJoints] = {};
+    bool runtimeAim = false;    // aim and pinch strengths from the runtime (XR_FB_hand_tracking_aim)
+    float pinchIndex = 0, pinchMiddle = 0; bool menuGesture = false, systemGesture = false;
+    bool noRay = false;         // no ray shown or used (the palm turned to the eyes: the menu gesture)
+    bool poke = false;          // the index finger is at a window, touching it directly (set by Interaction; no ray shown)
 };
 
 /** One part of the UI image shown as its own flat surface: the pixel rectangle (x y w h) at a pose relative to the panel,
@@ -90,7 +100,7 @@ public:
     /** Centre of the scale badge's TRUE SIZE / FIT VIEW button (world), for scripted tests. */
     V3 badgeButton() const;
     // ---- the app's 3D view (see the top)
-    std::function<void(int action, V3 o, V3 d, float depthMm)> onViewport;   // 0 press 1 drag 2 release 3 hover 4 leave; model mm
+    std::function<void(int action, V3 o, V3 d, float depthMm)> onViewport;   // 0 press 1 drag 2 release 3 hover 4 leave 5 cancel; model mm
     std::function<void()> onContextMenu;
     ElemRef hostHover;                       // the app's preselection
     float fade = 1;                          // < 1: the model drawn see-through (the app dims it while a sketch is edited)
@@ -119,6 +129,14 @@ public:
     void placePanel(const Pose& head);
     void update(const HandInput hands[2], float dt);
     void render(Renderer& r, const M4& viewProj, V3 eye);
+    /** The hands, controllers and their rays. Drawn by render() unless `pointersSeparate` (the headset then draws them in a
+     *  layer of their own over the UI's windows, so a finger touching a window is seen in front of it). */
+    void renderPointers(Renderer& r, const M4& viewProj, V3 eye);
+    bool pointersSeparate = false;
+    bool showControllers = true;
+    /** The hand / controller models (assets/models: hand-left, hand-right, touch-plus-left, touch-plus-right .glb). */
+    bool setModel(const std::string& name, const std::vector<uint8_t>& glb);             // false in the phone preview: its "controller" is your finger at the eye
+    Pose headPose{V3{0, 1.6f, 0}, Q{}, 1};   // the viewer's head (set by the session each frame): for hand rays
     /** Reads the panel image's alpha for hit testing (call when the image changed, at most a few times a second). */
     void updateMask(Renderer& r);
     /** The panel image changed: refresh its mipmapped copy (with sheets), or mark it for the compositor layers. */
@@ -133,6 +151,13 @@ public:
     Pose sheetPose(const Sheet& s) const { return compose(Pose{panel.pose.pos, panel.pose.rot, 1}, s.local); }
 
 private:
+    // hands: gestures, touching windows with the index finger, pinching with both hands to zoom; their meshes
+    HandGestures gest[2];
+    bool pokeTouch[2] = {false, false}; float pokeDepth[2] = {1, 1};
+    bool pokeAt(V3 tip, float* depth, Pose* aim) const;
+    void handInput(HandInput hands[2]);
+    bool pinchZoom = false;
+    GltfModel handModel[2], ctrlModel[2];
     struct Grab { bool on = false; Pose handStart, objStart; float t = 0; V3 aimStart; bool panel = false, plate = false; bool slide = false; V3 slideStart; int sheet = -1; };
     Grab grab[2];
     bool twoHand = false; float twoDist = 0; Pose twoModel; V3 twoMid, twoDir;

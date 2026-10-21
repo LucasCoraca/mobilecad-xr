@@ -64,6 +64,30 @@ finger on the phone you do in 3D with the trigger, with the same tools and the s
 | A / X | Put the windows back and the table in front of you | |
 | Scale badge (under the tool bars) | **TRUE SIZE**: the model at its real size, 1 mm = 1 mm · **FIT VIEW**: back to the scaled view · **PASSTHROUGH**: your room on / off | |
 
+Your controllers are shown in your hands as Quest 3 Touch Plus models, their trigger, grip, stick and buttons moving
+as you use them.
+
+![The Quest 3 controllers in the room](docs/controllers.png)
+
+### Hands
+
+Put the controllers down and use your hands: the headset tracks them and shows a hand model on your hands, every finger
+following yours. Everything works the same, with the gestures standing in for the buttons:
+
+| Hand | Does what |
+|---|---|
+| Point, then pinch (thumb + index) | The trigger: tap = click, pinch and move = drag, on the interface and on the model / the view. A ray from your shoulder through your hand shows where you point |
+| Touch a window with your index finger | Tap / drag it directly, like a touch screen (move the windows close to use them this way) |
+| Fist | The grip: grab the model, a window or the build plate's rim and carry it |
+| Both hands pinching (or two fists) | Zoom and turn the model between your hands: pull them apart to grow it |
+| Pinch thumb + middle finger | The view's context menu (B / Y) |
+| Left palm towards you, pinch | Menu (A / X): put the windows back and the table in front of you |
+
+The hands and the rays are drawn in a layer of their own over the windows, so a finger touching a window is seen in
+front of it; behind the model they are hidden by it. In passthrough the hand model is see-through, over your real hand.
+
+![Hands: the left one pointing at a window, the right one pinching](docs/hands.png)
+
 ### True size
 
 The badge under the tool bars always shows the model's scale (`SCALE 1:4.2`, `16:1`). **TRUE SIZE** switches to 1:1:
@@ -102,7 +126,9 @@ desktop build of MobileCAD XR (`desktop/`) runs the **same XR core** as the Ques
 
 ```sh
 sim/run.sh          # then open http://localhost:6080/vnc.html and press Connect
-sim/run.sh --test   # automated: scripted controller picks on the model, grabs and moves it, clicks a panel button, switches true size on and off
+sim/run.sh --test   # automated: scripted controller picks on the model, grabs and moves it, clicks a panel button, switches true size on and off;
+                    # then the same with tracked hands (pinch, fist, a finger pressing the button) and a two-hand pinch zoom
+sim/run.sh --hands  # interactive, the controllers shown as hands: trigger = pinch, grip = fist, B / Y = middle-finger pinch
 ```
 
 In the browser, click into the **Monado!** panel on the right, then:
@@ -118,7 +144,7 @@ the panel interaction. The scenes it loads (`scenes/*.mcxr`) are FreeCAD's examp
 
 | Path | What |
 |---|---|
-| `core/` | The XR core, shared by both builds: OpenXR session and controller actions (`xr_session`), interaction (`interaction`), GL renderer for OpenGL ES 3 and desktop GL 3.3 (`renderer`), FreeCAD meshes and face picking (`scene`) |
+| `core/` | The XR core, shared by both builds: OpenXR session, controller actions and hand trackers (`xr_session`), interaction (`interaction`), hand gestures (`hands`), the hand / controller glTF models (`gltf_model`), GL renderer for OpenGL ES 3 and desktop GL 3.3 (`renderer`), FreeCAD meshes and face picking (`scene`) |
 | `android/` | The headset app (Gradle). Compiles all of MobileCAD from the submodule; `XrActivity.kt` runs MobileCAD's Compose UI (its XR layout) on a see-through virtual display whose SurfaceTexture is cut into the surfaces around you (`arrangeSheets`; the image's alpha, read back a few times a second, decides where a ray hits the UI or passes through to the model), turns controller rays into touches on the UI and into MobileCAD's view (`ViewportView.xrPointer`: a virtual camera
 looking down the ray), and sends what that view draws (the model, preselection, overlay, the sketch rendered by its own editor onto a texture on the sketch plane) to the XR scene; `xr_android.cpp` runs the core on an OpenXR thread (or the touch preview). Flavors: `arm64` (Quest), `x86` (emulator) |
 | `desktop/` | Linux build of the core against any OpenXR runtime (Monado), with a mirror window, `--screenshot` and `--autotest` |
@@ -135,7 +161,9 @@ cd android && ./gradlew :app:assembleArm64Release
 
 ## License
 
-GPL-3.0-or-later, like MobileCAD. Includes FreeCAD (LGPL-2.1-or-later), the Khronos OpenXR loader (Apache-2.0) and
+GPL-3.0-or-later, like MobileCAD. Includes FreeCAD (LGPL-2.1-or-later), the Khronos OpenXR loader (Apache-2.0), the
+hand and controller models of the WebXR Input Profiles (MIT, `assets/models/LICENSE-webxr-input-profiles.md`), cgltf (MIT)
+and stb_image (public domain) in `core/third_party`, and
 MobileCAD's other components (see MobileCAD's About ▸ Open-source licenses). The test bench uses Monado (Boost
 Software License 1.0), installed from Ubuntu's packages. MobileCAD XR is an independent project, not affiliated with,
 sponsored or endorsed by the FreeCAD project, Meta or the Khronos Group. FreeCAD is a trademark of the FreeCAD Project

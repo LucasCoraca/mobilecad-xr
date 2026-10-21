@@ -77,6 +77,14 @@ private:
     bool makeUiChains(int w, int h);
     void updateUi(Interaction& ia, Renderer& r);
     Eye eyes[2]; int64_t colorFormat = 0; bool srgb = false;
+    /** The hands, controllers and rays in a projection layer of their own over the UI's layers (a finger touching a
+     *  window is in front of it), at the recommended resolution. */
+    Eye over[2]; bool overOk = false;
+    bool makeEye(Eye& eye, int w, int h);
+    /** Hand tracking (XR_EXT_hand_tracking; aim and pinch from XR_FB_hand_tracking_aim where there is one). */
+    XrHandTrackerEXT trackers[2] = {XR_NULL_HANDLE, XR_NULL_HANDLE}; bool handAim = false;
+    PFN_xrLocateHandJointsEXT locateJoints = nullptr; PFN_xrDestroyHandTrackerEXT destroyTracker = nullptr;
+    void makeHandTrackers(bool enabled);
     XrActionSet actionSet = XR_NULL_HANDLE;
     XrAction aAim = XR_NULL_HANDLE, aGrip = XR_NULL_HANDLE, aSelect = XR_NULL_HANDLE, aSqueeze = XR_NULL_HANDLE, aStick = XR_NULL_HANDLE, aMenu = XR_NULL_HANDLE, aContext = XR_NULL_HANDLE;
     XrPath hands[2] = {XR_NULL_PATH, XR_NULL_PATH}; XrSpace aimSpace[2] = {}, gripSpace[2] = {};

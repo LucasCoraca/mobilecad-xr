@@ -270,13 +270,61 @@ float Interaction::depthMm(int hand, const Pose& aim) const {
     V3 o, d; modelRay(aim, &o, &d); return std::max(len(scene.center() - o), 1.f);
 }
 
-void Interaction::update(const HandInput hands[2], float dt) {
+bool Interaction::pokeAt(V3 tip, float* depth, Pose* aim) const {
+    // the window (popups first: they are in front) whose face the fingertip is at, from 4 cm behind it to 5 cm in front
+    if (!panel.visible) return false;
+    auto at = [&](const Pose& p, float w, float h) {
+        V3 l = rotate(conj(p.rot), tip - p.pos);
+        if (std::fabs(l.x) > w / 2 || std::fabs(l.y) > h / 2 || l.z < -0.04f || l.z > 0.05f) return false;
+        V3 n = rotate(p.rot, {0, 0, 1});
+        *depth = l.z; *aim = Pose{tip + n * 0.08f, lookRot(n * -1.f), 1};
+        return true;
+    };
+    if (panel.sheets.empty()) return at(panel.pose, panel.width, panel.height);
+    for (size_t k = panel.popups.size() / 4; k-- > 0;) { Sheet s = panel.popupSheet(k); if (at(sheetPose(s), s.w / s.pxPerM, s.h / s.pxPerM)) return true; }
+    float best = 1e9f; Pose a; float d;
+    for (const Sheet& s : panel.sheets) if (at(sheetPose(s), s.w / s.pxPerM, s.h / s.pxPerM) && std::fabs(*depth) < best) { best = std::fabs(*depth); a = *aim; d = *depth; }
+    if (best > 1e8f) return false;
+    *aim = a; *depth = d; return true;
+}
+
+void Interaction::handInput(HandInput hands[2]) {
+    for (int i = 0; i < 2; ++i) {
+        HandInput& h = hands[i];
+        if (!h.active || !h.hand) { pokeTouch[i] = false; pokeDepth[i] = 1; continue; }
+        handGestures(h, headPose, i == 0, gest[i]);
+        // the index finger at a window: it touches it (a press when it reaches the surface coming from the front), no ray
+        float d; Pose aim;
+        bool near = pointerHand != i || pokeTouch[i] ? pokeAt(h.joints[JIndexTip].pos, &d, &aim) : false;
+        if (near && !gest[i].pinch && !gest[i].fist) {
+            if (pokeTouch[i]) pokeTouch[i] = d < 0.012f;
+            else if (d < 0.006f && pokeDepth[i] >= 0.006f && aimAt(aim).panel) pokeTouch[i] = true;
+            pokeDepth[i] = d;
+            h.aim = aim; h.select = pokeTouch[i] ? 1.f : 0.f; h.poke = true; h.context = false;
+        } else { pokeTouch[i] = false; pokeDepth[i] = near ? d : 1; }
+    }
+    // both hands pinching away from the UI: pinch to zoom, a grab with both hands (scale and turn between them). A touch
+    // the first hand started on the app's view is called off.
+    bool both = hands[0].active && hands[1].active && hands[0].hand && hands[1].hand && !hands[0].poke && !hands[1].poke;
+    bool p0 = hands[0].select > 0.55f, p1 = hands[1].select > 0.55f;
+    if (!pinchZoom && both && p0 && p1 && pointerHand < 0 && !target[0].panel && !target[1].panel && !target[0].badge && !target[1].badge) {
+        pinchZoom = true;
+        if (viewHand >= 0 && onViewport) { onViewport(5, V3{}, V3{}, 0); viewHand = -1; }
+        triggerOnModel[0] = triggerOnModel[1] = false;
+    }
+    if (pinchZoom && !p0 && !p1) pinchZoom = false;
+    if (pinchZoom) for (int i = 0; i < 2; ++i) { if (hands[i].select > 0.55f) hands[i].squeeze = 1; hands[i].select = 0; }
+}
+
+void Interaction::update(const HandInput in[2], float dt) {
+    HandInput hands[2] = {in[0], in[1]};
+    handInput(hands);
     if (placedEmpty && !scene.empty()) placeModel(placeHead);
     bool trig[2], squeeze[2], host = (bool)onViewport;
     for (int i = 0; i < 2; ++i) {
         const HandInput& h = hands[i];
         trig[i] = h.active && h.select > 0.55f; squeeze[i] = h.active && h.squeeze > 0.55f;
-        target[i] = h.active ? aimAt(h.aim) : Target{};
+        target[i] = h.active && !h.noRay ? aimAt(h.aim) : Target{};
         hover[i] = (target[i].panel || host) ? ElemRef{} : target[i].elem;
         if (h.active && h.menu && !prevMenu[i] && onMenu) onMenu();
         prevMenu[i] = h.active && h.menu;
@@ -421,25 +469,12 @@ void Interaction::update(const HandInput hands[2], float dt) {
 void Interaction::render(Renderer& r, const M4& vp, V3 eye) {
     viewer = eye;
     r.upload(scene);
-    Lines l; std::vector<float> dots;
-    auto dot = [&](V3 p, V3 c) { dots.insert(dots.end(), {p.x, p.y, p.z, c.x, c.y, c.z}); };
+    Lines l;
     bool room = passthroughAvailable && passthrough;               // the real room shows: no floor grid
     r.seeThrough = room;
     for (int x = -10; x <= 10 && !room; ++x) {                        // 4 m floor grid, 20 cm cells
         V3 c = (x == 0) ? V3{0.32f, 0.36f, 0.42f} : V3{0.22f, 0.25f, 0.29f};
         l.add({x * 0.2f, 0, -2}, {x * 0.2f, 0, 2}, c); l.add({-2, 0, x * 0.2f}, {2, 0, x * 0.2f}, c);
-    }
-    for (int i = 0; i < 2; ++i) {
-        const HandInput& h = last[i]; if (!h.active) continue;
-        const Target& t = target[i]; bool hit = t.panel || t.elem.valid() || t.rim;
-        float len_ = hit ? t.t : 1.5f; V3 end = h.aim.pos + forward(h.aim) * len_;
-        V3 col = t.panel ? V3{0.92f, 0.94f, 0.97f} : t.elem.valid() ? V3{0.35f, 0.75f, 1.f} : V3{0.55f, 0.60f, 0.66f};
-        l.add(h.aim.pos, end, col);
-        if (hit) dot(end, t.panel ? (pointerHand == i ? V3{0.26f, 0.56f, 0.87f} : V3{1, 1, 1}) : V3{0.35f, 0.75f, 1.f});
-        V3 g = h.grip.pos;                                             // controller: a small axis cross at the grip
-        l.add(g, g + rotate(h.grip.rot, {0.03f, 0, 0}), {0.9f, 0.3f, 0.3f});
-        l.add(g, g + rotate(h.grip.rot, {0, 0.03f, 0}), {0.3f, 0.9f, 0.3f});
-        l.add(g, g + rotate(h.grip.rot, {0, 0, 0.05f}), {0.3f, 0.5f, 0.95f});
     }
     ElemRef hv = onViewport ? hostHover : hover[1].valid() ? hover[1] : hover[0];
     if (!scene.empty()) r.drawScene(scene, model, vp, eye, hv, selected, fade);
@@ -576,6 +611,53 @@ void Interaction::render(Renderer& r, const M4& vp, V3 eye) {
         p.pos = p.pos + rotate(p.rot, {0, 0.09f, -0.02f}); p.rot = qnorm(p.rot * axisAngle({1, 0, 0}, -0.6f));
         float w = 0.16f; r.drawPanel(cardTex, false, p, w, w * cardH / std::max(cardW, 1), 0.01f, vp);
     }
+    if (!pointersSeparate) renderPointers(r, vp, eye);
+}
+
+bool Interaction::setModel(const std::string& name, const std::vector<uint8_t>& glb) {
+    GltfModel* m = name == "hand-left" ? &handModel[0] : name == "hand-right" ? &handModel[1] :
+                   name == "touch-plus-left" ? &ctrlModel[0] : name == "touch-plus-right" ? &ctrlModel[1] : nullptr;
+    if (!m) return false;
+    *m = GltfModel{}; std::string err;
+    if (!m->load(glb, &err)) { std::fprintf(stderr, "mcxr: model %s: %s\n", name.c_str(), err.c_str()); return false; }
+    return true;
+}
+
+void Interaction::renderPointers(Renderer& r, const M4& vp, V3 eye) {
+    Lines l; std::vector<float> dots;
+    auto dot = [&](V3 p, V3 c) { dots.insert(dots.end(), {p.x, p.y, p.z, c.x, c.y, c.z}); };
+    bool room = passthroughAvailable && passthrough;
+    for (int i = 0; i < 2; ++i) {
+        const HandInput& h = last[i]; if (!h.active) continue;
+        const Target& t = target[i]; bool hit = t.panel || t.elem.valid() || t.rim;
+        if (!h.noRay && !h.poke) {
+            // a hand's ray starts a little ahead of it and is fainter: it is a pointer, the hand is what you see
+            float len_ = hit ? t.t : (h.hand ? 0.8f : 1.5f); V3 f = forward(h.aim), end = h.aim.pos + f * len_;
+            V3 col = t.panel ? V3{0.92f, 0.94f, 0.97f} : t.elem.valid() ? V3{0.35f, 0.75f, 1.f} : V3{0.55f, 0.60f, 0.66f};
+            if (h.hand && h.select > 0.55f) col = V3{0.40f, 0.68f, 1.f};
+            l.add(h.aim.pos + f * (h.hand ? 0.06f : 0.f), end, col);
+            if (hit && (!t.panel || !uiLayers)) dot(end, t.panel ? (pointerHand == i ? V3{0.26f, 0.56f, 0.87f} : V3{1, 1, 1}) : V3{0.35f, 0.75f, 1.f});
+        } else if (h.poke && !uiLayers && t.panel) dot(h.aim.pos + forward(h.aim) * t.t, pokeTouch[i] ? V3{0.26f, 0.56f, 0.87f} : V3{1, 1, 1});
+        if (h.hand) {
+            // the hand model, its bones on the tracked joints; light and solid in VR, see-through over the real hand in passthrough
+            handModel[i].drawSkinned(r, vp, eye, [&](const std::string& name, Pose* p) {
+                for (int k = 1; k < kHandJoints; ++k) if (name == jointName(k)) { *p = Pose{h.joints[k].pos, h.joints[k].rot, 1}; return true; }
+                return false;
+            }, V3{0.86f, 0.88f, 0.92f}, room ? 0.55f : 0.95f);
+        } else if (showControllers) {
+            // the controller at its grip, its trigger, grip, stick and buttons moving as they are used
+            ctrlModel[i].draw(r, h.grip, vp, eye, [&](const std::string& v) {
+                if (v == "xr_standard_trigger_pressed") return h.select;
+                if (v == "xr_standard_squeeze_pressed") return h.squeeze;
+                if (v == "xr_standard_thumbstick_xaxis_pressed") return (h.stickX + 1) / 2;
+                if (v == "xr_standard_thumbstick_yaxis_pressed") return (1 - h.stickY) / 2;     // (WebXR: up is -1)
+                if (v == "a_button_pressed" || v == "x_button_pressed") return h.menu ? 1.f : 0.f;
+                if (v == "b_button_pressed" || v == "y_button_pressed") return h.context ? 1.f : 0.f;
+                return 0.f;
+            });
+        }
+    }
+    r.drawLines(l, vp);
     r.drawDots(dots, 14.f, vp);
 }
 

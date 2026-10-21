@@ -147,6 +147,7 @@ void xrMain() {
         if (gPlacePanel) hs.needsPlacement = true;                     // onPlaced puts the panel in front of the head
         if (!hs.running()) { std::this_thread::sleep_for(std::chrono::milliseconds(10)); continue; }
         updatePanel();
+        gIa.showControllers = true;
         hs.frame(gIa, gRenderer);
     }
     hs.destroy();
@@ -273,6 +274,13 @@ JNIEXPORT void JNICALL Java_app_mobilecad_xr_XrActivity_nativeSetPopups(JNIEnv* 
     post([r] { gIa.panel.popups = r; });
 }
 
+/** A hand / controller model (.glb bytes), parsed on the GL thread. */
+JNIEXPORT void JNICALL Java_app_mobilecad_xr_XrActivity_nativeSetModel(JNIEnv* e, jobject, jstring name, jbyteArray glb) {
+    const char* c = e->GetStringUTFChars(name, nullptr); std::string n = c; e->ReleaseStringUTFChars(name, c);
+    std::vector<uint8_t> b(e->GetArrayLength(glb)); e->GetByteArrayRegion(glb, 0, (jsize)b.size(), (jbyte*)b.data());
+    post([n, b] { gIa.setModel(n, b); });
+}
+
 /** The sketch's text labels: their texture (premultiplied RGBA; null = none) and per label: point (model mm), box centre
  *  offset and size (dp), texture cell (u0 v0 u1 v1). */
 JNIEXPORT void JNICALL Java_app_mobilecad_xr_XrActivity_nativeSetSketchLabels(JNIEnv* e, jobject, jobject pixels, jint w, jint h, jfloatArray labels) {
@@ -320,6 +328,7 @@ JNIEXPORT void JNICALL Java_app_mobilecad_xr_XrActivity_nativePreviewDraw(JNIEnv
     if (press && gPv.pressSeen) gPv.releasePending = false, press = gPv.mode == 1;
     if (press) gPv.pressSeen = true;
     hands[1].select = press ? 1.f : 0.f;
+    gIa.showControllers = false;
     gIa.update(hands, 1.f / 60.f);
     Pose eye = previewEye(); float aspect = h > 0 ? (float)w / h : 1.f, fy = gPv.fov, fx = std::atan(std::tan(fy) * aspect);
     M4 vp = mul(projectionFov(-fx, fx, fy, -fy, 0.02f, 50.f), viewFrom(eye));

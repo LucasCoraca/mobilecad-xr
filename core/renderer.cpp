@@ -29,14 +29,18 @@ static GLuint program(GLuint vs, GLuint fs) {
 
 // faces: two-sided lighting from a key light above the viewer and a fill light, plus a little ambient
 static const char* kMeshVs = R"(
-layout(location=0) in vec3 aPos; layout(location=1) in vec3 aNrm;
-uniform mat4 uMvp; uniform mat4 uModel; out vec3 vN; out vec3 vP;
-void main(){ vN = mat3(uModel) * aNrm; vP = (uModel * vec4(aPos,1.0)).xyz; gl_Position = uMvp * vec4(aPos,1.0); })";
+layout(location=0) in vec3 aPos; layout(location=1) in vec3 aNrm; layout(location=2) in vec2 aUv;
+uniform mat4 uMvp; uniform mat4 uModel; out vec3 vN; out vec3 vP; out vec2 vUv;
+void main(){ vN = mat3(uModel) * aNrm; vP = (uModel * vec4(aPos,1.0)).xyz; vUv = aUv; gl_Position = uMvp * vec4(aPos,1.0); })";
 static const char* kMeshFs = R"(
-in vec3 vN; in vec3 vP; uniform vec4 uColor; uniform float uLit; uniform vec3 uEye; uniform float uGamma; out vec4 o;
+in vec3 vN; in vec3 vP; in vec2 vUv; uniform vec4 uColor; uniform float uLit; uniform vec3 uEye; uniform float uGamma;
+uniform sampler2D uTex; uniform float uUseTex; uniform float uFadeUv; out vec4 o;
 void main(){ vec3 n = normalize(vN); if (dot(n, uEye - vP) < 0.0) n = -n;
   float l = 0.38 + 0.47*max(dot(n, normalize(vec3(0.35,0.9,0.45))),0.0) + 0.22*max(dot(n, normalize(vec3(-0.6,0.2,-0.5))),0.0);
-  o = vec4(pow(uColor.rgb * mix(1.0, l, uLit), vec3(uGamma)), uColor.a); })";
+  vec3 base = uUseTex > 0.5 ? uColor.rgb * texture(uTex, vUv).rgb : uColor.rgb;
+  float a = uColor.a;
+  if (uFadeUv > 0.5) { a *= vUv.x; if (a < 0.02) discard; }
+  o = vec4(pow(base * mix(1.0, l, uLit), vec3(uGamma)), a); })";
 static const char* kLineVs = R"(
 layout(location=0) in vec3 aPos; layout(location=1) in vec3 aCol; uniform mat4 uMvp; uniform float uSize; out vec3 vC;
 void main(){ vC = aCol; gl_PointSize = uSize; gl_Position = uMvp * vec4(aPos,1.0); })";
@@ -127,7 +131,8 @@ void Renderer::drawScene(const Scene& s, const Pose& model, const M4& vp, V3 eye
     M4 mm = fromPose(model); M4 mvp = mul(vp, mm);
     glUseProgram(meshProg);
     glUniformMatrix4fv(uMvp, 1, GL_FALSE, mvp.m); glUniformMatrix4fv(uModel, 1, GL_FALSE, mm.m); glUniform3f(uEye, eye.x, eye.y, eye.z);
-    glUniform1f(glGetUniformLocation(meshProg, "uGamma"), gamma);
+    glUniform1f(glGetUniformLocation(meshProg, "uGamma"), gamma); glUniform1f(glGetUniformLocation(meshProg, "uUseTex"), 0.f);
+    glUniform1f(glGetUniformLocation(meshProg, "uFadeUv"), 0.f);
     const V3 hoverCol{0.73f, 0.86f, 0.96f}, selCol{0.26f, 0.56f, 0.87f};
     auto faceRange = [&](const Mesh& m, int id, int& first, int& count) {
         if (id <= 0 || id >= (int)m.faceFirst.size() || m.faceFirst[id] < 0) return false;
@@ -169,6 +174,36 @@ void Renderer::drawScene(const Scene& s, const Pose& model, const M4& vp, V3 eye
         for (const ElemRef& r : sel) if (r.mesh == (int)i && r.kind == 'E') edge(r.id, selCol);
     }
     glLineWidth(1.f); glBindVertexArray(0); glDisable(GL_BLEND);
+}
+
+void Renderer::uploadMesh(GpuMesh& m, const std::vector<float>& tris, unsigned version, int fpv) {
+    if (m.version == version && m.vao && glIsVertexArray(m.vao)) return;
+    if (!m.vao || !glIsVertexArray(m.vao)) {
+        glGenVertexArrays(1, &m.vao); glGenBuffers(1, &m.vbo);
+        glBindVertexArray(m.vao); glBindBuffer(GL_ARRAY_BUFFER, m.vbo);
+        glEnableVertexAttribArray(0); glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, fpv * 4, (void*)0);
+        glEnableVertexAttribArray(1); glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, fpv * 4, (void*)12);
+        if (fpv >= 8) { glEnableVertexAttribArray(2); glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, fpv * 4, (void*)24); }
+    }
+    glBindVertexArray(m.vao); glBindBuffer(GL_ARRAY_BUFFER, m.vbo);
+    glBufferData(GL_ARRAY_BUFFER, tris.size() * 4, tris.data(), GL_DYNAMIC_DRAW);
+    glBindVertexArray(0);
+    m.count = (int)(tris.size() / fpv); m.version = version;
+}
+
+void Renderer::drawMesh(const GpuMesh& m, const M4& mm, const M4& vp, V3 eye, V3 c, float alpha, GLuint tex) {
+    if (!m.vao || !m.count) return;
+    M4 mvp = mul(vp, mm);
+    glUseProgram(meshProg);
+    glUniformMatrix4fv(uMvp, 1, GL_FALSE, mvp.m); glUniformMatrix4fv(uModel, 1, GL_FALSE, mm.m); glUniform3f(uEye, eye.x, eye.y, eye.z);
+    glUniform1f(glGetUniformLocation(meshProg, "uGamma"), gamma); glUniform1f(uLit, 1.f); glUniform4f(uColor, c.x, c.y, c.z, alpha);
+    glUniform1f(glGetUniformLocation(meshProg, "uUseTex"), tex ? 1.f : 0.f);
+    if (tex) { glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_2D, tex); glUniform1i(glGetUniformLocation(meshProg, "uTex"), 0); }
+    glUniform1f(glGetUniformLocation(meshProg, "uFadeUv"), fadeUv ? 1.f : 0.f);
+    if (alpha < 0.999f || fadeUv) { glEnable(GL_BLEND); glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA); }
+    glBindVertexArray(m.vao); glDrawArrays(GL_TRIANGLES, 0, m.count); glBindVertexArray(0);
+    glUniform1f(glGetUniformLocation(meshProg, "uUseTex"), 0.f); glUniform1f(glGetUniformLocation(meshProg, "uFadeUv"), 0.f);
+    glDisable(GL_BLEND);
 }
 
 void Renderer::drawLines(const Lines& l, const M4& vp) {
