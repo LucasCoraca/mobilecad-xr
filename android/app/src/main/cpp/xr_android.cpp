@@ -84,14 +84,15 @@ void createPanel() {
     gIa.panel.visible = true;
     JNIEnv* e = env(); e->CallVoidMethod(gActivity, method(e, "createPanelSurface", "(III)V"), (jint)tex, pw, ph);
 }
-/** Latches the newest UI image; a few times a second, reads back where it is see-through (for the rays). */
+/** Latches the newest UI image; a few times a second, reads back where it is see-through (for the rays). Once a second
+ *  it is read back anyway: a mask taken from a moment the UI was hidden must not outlive it when no new frame follows. */
 void updatePanel() {
     static double lastMask = 0; static bool changed = false;
     JNIEnv* e = env(); bool fresh = e->CallBooleanMethod(gActivity, method(e, "updatePanelTexture", "()Z"));
     if (fresh) gIa.panelChanged(gRenderer);
     changed |= fresh;
     double now = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
-    if (changed && now - lastMask > 0.1) { gIa.updateMask(gRenderer); changed = false; lastMask = now; }
+    if ((changed && now - lastMask > 0.1) || now - lastMask > 1.0) { gIa.updateMask(gRenderer); changed = false; lastMask = now; }
 }
 
 void hookCallbacks() {

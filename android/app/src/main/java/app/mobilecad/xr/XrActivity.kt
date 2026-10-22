@@ -102,6 +102,13 @@ class XrActivity : ComponentActivity() {
     }
 
     override fun onStop() { super.onStop(); app.autosave() }
+    /** Back from another activity (a file picker): draw the interface afresh, so the headset gets its image (and where
+     *  it can be clicked) again even when nothing in it changes. */
+    override fun onStart() {
+        super.onStart()
+        panelWindows().forEach { w -> w.invalidate(); w.requestLayout() }
+        if (!popupsPosted) { popupsPosted = true; window.decorView.post { popupsPosted = false; sendPopups() } }
+    }
     override fun onDestroy() { nativeStop(); presentation?.dismiss(); display?.release(); super.onDestroy() }
 
     /** FreeCAD's example projects ship in the APK; the first one opens so there is something to look at. */
@@ -327,7 +334,12 @@ class XrActivity : ComponentActivity() {
 
     /** Called on the GL thread every frame: latch the newest UI image into the panel texture. */
     @Suppress("unused") fun updatePanelTexture(): Boolean {
-        if (!panelFrame) return false
+        if (!panelFrame) {
+            // no new image: still look at the windows twice a second (one closed while nothing redrew stays cut out otherwise)
+            val now = SystemClock.uptimeMillis()
+            if (now - popupsChecked > 500 && !popupsPosted) { popupsChecked = now; popupsPosted = true; runOnUiThread { popupsPosted = false; sendPopups() } }
+            return false
+        }
         panelFrame = false; try { panelTexture?.updateTexImage() } catch (e: Exception) { Log.w("mcxr", "panel", e) }
         if (!popupsPosted) { popupsPosted = true; runOnUiThread { popupsPosted = false; sendPopups() } }
         return true
@@ -368,6 +380,7 @@ class XrActivity : ComponentActivity() {
     }
 
     @Volatile private var popupsPosted = false
+    private var popupsChecked = 0L
     private var lastPopups = FloatArray(0)
     /** Where the menus, popups and dialogs over MobileCAD's window are: the headset shows each as a surface of its own. */
     private fun sendPopups() {
@@ -397,7 +410,10 @@ class XrActivity : ComponentActivity() {
             val f = c.getDeclaredField("mViews").apply { isAccessible = true }
             @Suppress("UNCHECKED_CAST")
             val all = (f.get(c.getMethod("getInstance").invoke(null)) as List<View>).toList()
-            all.filter { it.isAttachedToWindow && it.visibility == View.VISIBLE && it.display?.displayId == id }.ifEmpty { listOf(main) }
+            // only windows that are shown: one hidden or on its way out (a menu closed while a file picker was in front)
+            // would otherwise take the touches meant for the interface
+            all.filter { it.isAttachedToWindow && it.visibility == View.VISIBLE && it.windowVisibility == View.VISIBLE &&
+                         it.width > 0 && it.height > 0 && it.display?.displayId == id }.ifEmpty { listOf(main) }
         } catch (e: Exception) { Log.w("mcxr", "window list", e); listOf(main) }
     }
 

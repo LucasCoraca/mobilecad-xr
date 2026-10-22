@@ -233,8 +233,12 @@ std::vector<V3> Interaction::uiCursors() const {
 
 void Interaction::updateMask(Renderer& r) {
     if (!panel.seeThrough || !panel.tex) return;
-    panel.maskW = panel.pxW / Panel::maskScale; panel.maskH = panel.pxH / Panel::maskScale;
-    r.readAlpha(panel.tex, panel.external, panel.maskW, panel.maskH, panel.mask);
+    int w = panel.pxW / Panel::maskScale, h = panel.pxH / Panel::maskScale; std::vector<uint8_t> m;
+    r.readAlpha(panel.tex, panel.external, w, h, m);
+    // an image with nothing drawn at all is the UI's window hidden for a moment (another activity in front, a file picker),
+    // never the UI itself: keep the last mask, or the rays would pass through every window until the UI redraws
+    if (std::none_of(m.begin(), m.end(), [](uint8_t a) { return a > 24; })) return;
+    panel.maskW = w; panel.maskH = h; panel.mask = std::move(m);
 }
 
 bool Interaction::badgeRay(const Pose& aim, float* t, float* u) const {
