@@ -89,7 +89,8 @@ private:
     PFN_xrLocateHandJointsEXT locateJoints = nullptr; PFN_xrDestroyHandTrackerEXT destroyTracker = nullptr;
     void makeHandTrackers(bool enabled);
     XrActionSet actionSet = XR_NULL_HANDLE;
-    XrAction aAim = XR_NULL_HANDLE, aGrip = XR_NULL_HANDLE, aSelect = XR_NULL_HANDLE, aSqueeze = XR_NULL_HANDLE, aStick = XR_NULL_HANDLE, aMenu = XR_NULL_HANDLE, aContext = XR_NULL_HANDLE;
+    XrAction aAim = XR_NULL_HANDLE, aGrip = XR_NULL_HANDLE, aSelect = XR_NULL_HANDLE, aSqueeze = XR_NULL_HANDLE, aStick = XR_NULL_HANDLE, aMenu = XR_NULL_HANDLE, aContext = XR_NULL_HANDLE,
+             aHaptic = XR_NULL_HANDLE;   // vibration output: the interaction's ticks
     XrPath hands[2] = {XR_NULL_PATH, XR_NULL_PATH}; XrSpace aimSpace[2] = {}, gripSpace[2] = {};
     XrTime lastTime = 0, firstTime = 0;
     bool makeActions();

@@ -42,6 +42,28 @@ inline Q lookRot(V3 d) {
 }
 inline V3 lerp(V3 a, V3 b, float t) { return a + (b - a) * t; }
 
+/** A critically damped spring from `cur` towards `target` (`vel` carries its speed between calls), settling in about
+ *  `smoothTime` seconds; never overshoots. */
+inline float smoothDamp(float cur, float target, float& vel, float smoothTime, float dt) {
+    if (dt <= 0) return cur;
+    float omega = 2.f / std::max(smoothTime, 1e-4f), x = omega * dt, e = 1.f / (1 + x + 0.48f * x * x + 0.235f * x * x * x);
+    float change = cur - target, temp = (vel + omega * change) * dt;
+    vel = (vel - omega * temp) * e;
+    float out = target + (change + temp) * e;
+    if ((target - cur > 0) == (out > target)) { out = target; vel = 0; }
+    return out;
+}
+/** The same for a rotation (each component damped, the target taken on the near side, the result renormalised). */
+inline Q smoothDamp(Q cur, Q target, Q& vel, float smoothTime, float dt) {
+    if (dt <= 0) return cur;
+    float s = cur.x * target.x + cur.y * target.y + cur.z * target.z + cur.w * target.w < 0 ? -1.f : 1.f;
+    Q r = qnorm(Q{smoothDamp(cur.x, target.x * s, vel.x, smoothTime, dt), smoothDamp(cur.y, target.y * s, vel.y, smoothTime, dt),
+                  smoothDamp(cur.z, target.z * s, vel.z, smoothTime, dt), smoothDamp(cur.w, target.w * s, vel.w, smoothTime, dt)});
+    float k = r.x * vel.x + r.y * vel.y + r.z * vel.z + r.w * vel.w;      // keep the speed tangent to the unit sphere
+    vel = Q{vel.x - r.x * k, vel.y - r.y * k, vel.z - r.z * k, vel.w - r.w * k};
+    return r;
+}
+
 /** Rigid transform with uniform scale: p' = pos + rot * (scale * p). */
 struct Pose { V3 pos; Q rot; float scale = 1; };
 inline V3 apply(const Pose& t, V3 p) { return t.pos + rotate(t.rot, p * t.scale); }

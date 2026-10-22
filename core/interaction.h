@@ -8,6 +8,7 @@
 //   both hands grabbing:  scale and turn the model between the hands
 //   thumbstick (not on the panel): up/down scales, left/right turns the model
 //   menu / A / X:         onMenu (the app shows / recentres the panel, or switches documents)
+//   B / Y held + a flick: the marking menu (onPieOpen); a short press: the context menu
 //
 // With `onViewport` set (MobileCAD XR) the space around the panel is the app's 3D view: the trigger anywhere off the panel
 // is a finger on that view (tap, drag, double tap) and pointing is a hovering mouse, so every tool of the app (picking,
@@ -104,6 +105,20 @@ public:
     // ---- the app's 3D view (see the top)
     std::function<void(int action, V3 o, V3 d, float depthMm)> onViewport;   // 0 press 1 drag 2 release 3 hover 4 leave 5 cancel; model mm
     std::function<void()> onContextMenu;
+    /** Marking menu: B / Y held, the context menu's items are laid out in a ring around the controller, and moving the
+     *  controller picks one: past 4 cm from where the button went down the item in that direction is pointed at, past
+     *  8 cm (or letting go while pointing at one) it is chosen. A short press without moving is the plain context menu
+     *  (onContextMenu). `onPieOpen` asks the app for the items (it answers with setPieItems); without it the button opens
+     *  the context menu at once. */
+    std::function<void()> onPieOpen;
+    std::function<void(int index)> onPieSelect;
+    void setPieItems(const std::vector<std::string>& labels, const std::vector<bool>& danger);
+    /** Haptic pulses asked for this frame (amplitude 0..1 per hand); the session plays and clears them. */
+    float haptic[2] = {0, 0};
+    /** The ray is steadied: a critically damped spring on the aim's direction, settling in `aimSmoothing` seconds while
+     *  the controller is still (none while it swings), held nearly still while the trigger is on its way down (pulling it
+     *  jerks the controller off small targets). */
+    float aimSmoothing = 0.045f;
     ElemRef hostHover;                       // the app's preselection
     float fade = 1;                          // < 1: the model drawn see-through (the app dims it while a sketch is edited)
     /** What the app's view draws over the model, in model coordinates (mm): lines (x y z x y z r g b), dots (x y z r g b
@@ -189,6 +204,15 @@ private:
     bool panelRay(const Pose& aim, float* t, float* px, float* py, bool clamp, int* sheet = nullptr) const;
     int pointerSheet = -1;                    // the sheet a touch started on (drags stay on its plane)
     bool badgeRay(const Pose& aim, float* t, float* u) const;
+    // the steadied aim (per hand): its direction and the spring's speed
+    Q aimRot[2], aimRaw[2], aimVel[2]; bool aimInit[2] = {false, false};
+    void steady(HandInput hands[2], float dt);
+    // the marking menu: the hand holding it, where it started, its plane (upright, facing the viewer), the item pointed at
+    struct Pie { int hand = -1; V3 origin, right, up; float t = 0; bool waiting = false; int hot = -1; V3 at;
+                 std::vector<std::string> labels; std::vector<bool> danger; } pie;
+    void pieInput(const HandInput hands[2], float dt);
+    void renderPie(Renderer& r, const M4& vp, V3 eye);
+    ElemRef prevHostHover; int prevBadgeHot = -1;
 };
 
 }  // namespace mcxr

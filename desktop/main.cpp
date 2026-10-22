@@ -37,7 +37,7 @@ static void writePpm(const char* path, GLuint tex, int w, int h) {
 
 
 int main(int argc, char** argv) {
-    std::vector<std::string> files; const char* shot = nullptr; int shotFrames = 120; bool autotest = false, startTrue = false, sheets = false, hands = false, demo = false;
+    std::vector<std::string> files; const char* shot = nullptr; int shotFrames = 120; bool autotest = false, startTrue = false, sheets = false, hands = false, demo = false, pie = false;
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
         if (a == "--screenshot" && i + 1 < argc) shot = argv[++i];
@@ -46,6 +46,7 @@ int main(int argc, char** argv) {
         else if (a == "--sheets") sheets = true;
         else if (a == "--hands") hands = true;
         else if (a == "--demo") demo = true;
+        else if (a == "--pie") demo = pie = true;
         else if (a == "--true-size") startTrue = true;
         else if (DIR* d = opendir(a.c_str())) {
             while (dirent* e = readdir(d)) { std::string n = e->d_name; if (n.size() > 5 && n.substr(n.size() - 5) == ".mcxr") files.push_back(a + "/" + n); }
@@ -248,6 +249,11 @@ int main(int argc, char** argv) {
             if (scripted == 1) toHand(h[1], head, false, h[1].aim.pos - shoulderPoint(head, false));
         };
     }
+    if (pie) {
+        static const std::vector<std::string> items{"Sketch", "Extrude (Pad)", "Plane", "Hide / show", "Delete 1", "Clear selection", "Zoom to fit", "More..."};
+        ia.onPieOpen = [&] { std::vector<bool> d(items.size(), false); d[4] = true; ia.setPieItems(items, d); };
+        ia.onPieSelect = [](int i) { std::fprintf(stderr, "mcxr: marking menu chose %d\n", i); };
+    }
     // --demo: both hands held still in front of you (for a look at the controllers / hands), the right one pinching
     if (demo)
         hs.inputOverride = [&](HandInput h[2], const Pose& head, double t) {
@@ -259,9 +265,17 @@ int main(int argc, char** argv) {
                 V3 handle = norm(up * 0.82f + aimDir * 0.57f), z = handle * -1.f, x = norm(cross(up, z)); if (len(x) < 0.5f) x = right;
                 c.grip = Pose{pos, fromBasis(x, cross(z, x), z), 1}; c.aim = Pose{pos + handle * 0.05f + aimDir * 0.02f, lookRot(aimDir), 1};
                 c.select = i ? 1.f : 0.f; c.stickX = i ? 0.f : 0.7f;
-                if (hands) toHand(c, head, i == 0, pos - (shoulderPoint(head, i == 0) + norm(aimDir) * 0.42f));
+                V3 dp{};
+                if (pie && i == 1) {
+                    // --pie: the right hand holds B (a hand: pinches thumb + middle) and moves 6 cm up and to the right
+                    static double t0 = -1;
+                    c.select = 0; c.context = t > 0.5;
+                    if (c.context && t0 < 0) t0 = t;
+                    if (t0 >= 0) dp = (right * 0.042f + up * 0.042f) * std::min(1.f, (float)(t - t0) / 0.5f);
+                    c.aim.pos = c.aim.pos + dp; c.grip.pos = c.grip.pos + dp;
+                }
+                if (hands) toHand(c, head, i == 0, pos + dp - (shoulderPoint(head, i == 0) + norm(aimDir) * 0.42f));
             }
-            (void)t;
         };
     else if (hands && !autotest)
         hs.inputOverride = [&](HandInput h[2], const Pose& head, double) { for (int i = 0; i < 2; ++i) toHand(h[i], head, i == 0, V3{}); };

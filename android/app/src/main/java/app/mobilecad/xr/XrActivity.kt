@@ -35,9 +35,11 @@ import androidx.lifecycle.setViewTreeViewModelStoreOwner
 import androidx.savedstate.setViewTreeSavedStateRegistryOwner
 import app.mobilecad.freecad.AppState
 import app.mobilecad.freecad.SelRef
+import app.mobilecad.ui.ContextEntry
 import app.mobilecad.ui.OS
 import app.mobilecad.ui.Shell
 import app.mobilecad.ui.XrLayout
+import app.mobilecad.ui.viewContextEntries
 import kotlinx.coroutines.launch
 import org.qtproject.qt.android.QtHostAccess
 import java.io.File
@@ -77,6 +79,7 @@ class XrActivity : ComponentActivity() {
     private external fun nativeSetModel(name: String, glb: ByteArray)
     private external fun nativeEndScene(place: Boolean)
     private external fun nativeSetSelection(objs: Array<String>, subs: Array<String>)
+    private external fun nativeSetPieItems(labels: Array<String>, danger: BooleanArray)
     private external fun nativePreviewInit()
     private external fun nativePreviewTouch(action: Int, x: Float, y: Float)
     private external fun nativePreviewDraw(w: Int, h: Int)
@@ -163,6 +166,15 @@ class XrActivity : ComponentActivity() {
     }
     private var swallow = false
     @Suppress("unused") fun onXrContextMenu() { runOnUiThread { app.viewport?.xrContextMenu() } }
+    /** B / Y held: the view's context menu as a marking menu around the controller. A ring holds 8 entries: with more,
+     *  the first 7 and "More..." (the whole menu, as a tap on B / Y opens it). */
+    private var pieEntries: List<ContextEntry> = emptyList()
+    @Suppress("unused") fun onXrPieOpen() { runOnUiThread {
+        val all = viewContextEntries(app, app.viewport)
+        pieEntries = if (all.size <= 8) all else all.take(7) + ContextEntry("More...", -1) { app.viewport?.xrContextMenu() }
+        nativeSetPieItems(pieEntries.map { it.label.replace("…", "...") }.toTypedArray(), BooleanArray(pieEntries.size) { pieEntries[it].danger })
+    } }
+    @Suppress("unused") fun onXrPieSelect(i: Int) { runOnUiThread { pieEntries.getOrNull(i)?.action?.invoke() } }
 
     private var viewPosted = false
     private fun viewChanged() { if (viewPosted) return; viewPosted = true; window.decorView.postOnAnimation { viewPosted = false; sendView() } }

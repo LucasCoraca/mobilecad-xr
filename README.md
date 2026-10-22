@@ -60,9 +60,25 @@ finger on the phone you do in 3D with the trigger, with the same tools and the s
 | Trigger on the build plate's rim | | Slide the table where the ray points |
 | Both grips | | Zoom (pinch: pull your hands apart / together) and turn the model between your hands |
 | Thumbstick | Scroll | Up/down scales, left/right turns (about the origin) |
-| B / Y | | The view's context menu (a two-finger tap on the phone) |
+| B / Y | | Tap: the view's context menu (a two-finger tap on the phone) · hold and flick: the same menu as a ring around the controller (see below) |
 | A / X | Put the windows back and the table in front of you | |
 | Scale badge (under the tool bars) | **TRUE SIZE**: the model at its real size, 1 mm = 1 mm · **FIT VIEW**: back to the scaled view · **PASSTHROUGH**: your room on / off | |
+
+**Marking menu.** Hold B / Y (or pinch thumb and middle finger) and the view's context menu opens as a ring of its
+entries around your controller, the first at the top, going clockwise. Move the controller towards an entry: past 4 cm
+it is pointed at (a tick in the controller), past 8 cm, or letting go while pointing at it, it runs. Letting go without
+moving closes the ring; a quick press is the usual context menu. The ring stands upright, facing you; with more than eight
+entries the last is *More…*, the whole menu.
+
+**A steadier ray.** The ray is steadied while you hold the controller still (a critically damped spring on its
+direction, settling in about 45 ms; it follows a swing at once), and it holds its place while the trigger travels down,
+so pulling the trigger does not jerk it off small buttons.
+
+**Ticks.** The controllers give a short tick when you press the interface or the model, when what is under the ray in
+the view changes (a face, an edge), on the scale badge's buttons and on the marking menu's entries.
+
+**Drag arrows** in the room follow the ray along their own line: the arrow's tip goes where the ray passes closest to
+it, at any angle.
 
 With passthrough off, your controllers are shown in your hands as Quest 3 Touch Plus models, their trigger, grip, stick
 and buttons moving as you use them, and your hands as a hand model. In passthrough you see your real controllers and
@@ -86,7 +102,7 @@ following yours. Everything works the same, with the gestures standing in for th
 | Touch a window with your index finger | Tap / drag it directly, like a touch screen (move the windows close to use them this way) |
 | Fist (close your hand for a moment) | The grip: grab the model, a window or the build plate's rim and carry it. A pinch never turns into a grab |
 | Both hands pinching (or two fists) | Zoom and turn the model between your hands: pull them apart to grow it |
-| Pinch thumb + middle finger | The view's context menu (B / Y) |
+| Pinch thumb + middle finger | The view's context menu (B / Y): a quick pinch opens it, pinch and flick the hand picks from its ring |
 | Left palm towards you, pinch | Menu (A / X): put the windows back and the table in front of you |
 
 Pinch and grab are the headset's own (the same detection its system menus use, through `XR_EXT_hand_interaction`), and
@@ -137,7 +153,12 @@ sim/run.sh          # then open http://localhost:6080/vnc.html and press Connect
 sim/run.sh --test   # automated: scripted controller picks on the model, grabs and moves it, clicks a panel button, switches true size on and off;
                     # then the same with tracked hands (pinch, fist, a finger pressing the button) and a two-hand pinch zoom
 sim/run.sh --hands  # interactive, the controllers shown as hands: trigger = pinch, grip = fist, B / Y = middle-finger pinch
+tests/run.sh        # headless checks of the interaction core: the steadied ray (tremor, swings, the trigger's travel), the
+                    # marking menu with controllers and with hands (flicks, release, tap, dead zone), the ticks
 ```
+
+`build/desktop/mobilecad-xr-desktop --pie [--hands] --screenshot out.ppm --frames 60 scene.mcxr` (inside the image)
+shows the marking menu held open by a controller (or a hand), an entry pointed at.
 
 In the browser, click into the **Monado!** panel on the right, then:
 `W A S D` / `Q E` move the headset · arrows or right-drag look · hold `Ctrl` = left controller, hold `Alt` = right
@@ -166,6 +187,13 @@ git submodule update --init
 python3 -I mobilecad/engine/package_runtime.py arm64-v8a android
 cd android && ./gradlew :app:assembleArm64Release
 ```
+
+## Credits
+
+The marking menu, the steadier ray and the ticks are inspired by Oleg Frolov's spatial interaction prototypes,
+[Volorf/xr-prototypes](https://github.com/Volorf/xr-prototypes) (MIT): his pie and circular menus (the item chosen by
+the direction the pinch moves from where it started, a dead zone in the middle, an outer radius that commits), his
+palm menu's smoothing against hand tremor, and his notes on feedback making up for the missing touch.
 
 ## License
 

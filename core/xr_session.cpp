@@ -286,6 +286,7 @@ bool Headset::makeActions() {
         !make(&aStick, "stick", "Scale / turn", XR_ACTION_TYPE_VECTOR2F_INPUT) || !make(&aMenu, "menu", "Recenter", XR_ACTION_TYPE_BOOLEAN_INPUT) ||
         !make(&aContext, "context", "Context menu", XR_ACTION_TYPE_BOOLEAN_INPUT))
         return false;
+    if (!make(&aHaptic, "haptic", "Haptics", XR_ACTION_TYPE_VIBRATION_OUTPUT)) aHaptic = XR_NULL_HANDLE;   // ticks are optional
     // suggested bindings per controller; a profile the runtime does not know is simply skipped
     struct B { XrAction a; const char* path; };
     auto suggest = [&](const char* profile, std::vector<B> bs) {
@@ -298,6 +299,7 @@ bool Headset::makeActions() {
         if (XR_FAILED(r)) LOG("bindings for %s not accepted (%d)", profile, (int)r);
     };
     const char* L = "/user/hand/left/input/"; const char* R = "/user/hand/right/input/";
+    const char* HL = "/user/hand/left/output/haptic"; const char* HR = "/user/hand/right/output/haptic";
     std::vector<std::string> s; s.reserve(64);    // backing storage for the path strings (no reallocation: pointers stay valid)
     auto pr = [&](const std::string& x) { s.push_back(x); return s.back().c_str(); };
     suggest("/interaction_profiles/khr/simple_controller", {
@@ -312,7 +314,8 @@ bool Headset::makeActions() {
         {aSqueeze, pr(std::string(L) + "squeeze/value")}, {aSqueeze, pr(std::string(R) + "squeeze/value")},
         {aStick, pr(std::string(L) + "thumbstick")}, {aStick, pr(std::string(R) + "thumbstick")},
         {aMenu, pr(std::string(L) + "x/click")}, {aMenu, pr(std::string(R) + "a/click")},
-        {aContext, pr(std::string(L) + "y/click")}, {aContext, pr(std::string(R) + "b/click")}});
+        {aContext, pr(std::string(L) + "y/click")}, {aContext, pr(std::string(R) + "b/click")},
+        {aHaptic, HL}, {aHaptic, HR}});
     suggest("/interaction_profiles/microsoft/motion_controller", {
         {aAim, pr(std::string(L) + "aim/pose")}, {aAim, pr(std::string(R) + "aim/pose")},
         {aGrip, pr(std::string(L) + "grip/pose")}, {aGrip, pr(std::string(R) + "grip/pose")},
@@ -320,7 +323,8 @@ bool Headset::makeActions() {
         {aSqueeze, pr(std::string(L) + "squeeze/click")}, {aSqueeze, pr(std::string(R) + "squeeze/click")},
         {aStick, pr(std::string(L) + "thumbstick")}, {aStick, pr(std::string(R) + "thumbstick")},
         {aMenu, pr(std::string(L) + "menu/click")}, {aMenu, pr(std::string(R) + "menu/click")},
-        {aContext, pr(std::string(L) + "thumbstick/click")}, {aContext, pr(std::string(R) + "thumbstick/click")}});
+        {aContext, pr(std::string(L) + "thumbstick/click")}, {aContext, pr(std::string(R) + "thumbstick/click")},
+        {aHaptic, HL}, {aHaptic, HR}});
     suggest("/interaction_profiles/valve/index_controller", {
         {aAim, pr(std::string(L) + "aim/pose")}, {aAim, pr(std::string(R) + "aim/pose")},
         {aGrip, pr(std::string(L) + "grip/pose")}, {aGrip, pr(std::string(R) + "grip/pose")},
@@ -328,7 +332,8 @@ bool Headset::makeActions() {
         {aSqueeze, pr(std::string(L) + "squeeze/value")}, {aSqueeze, pr(std::string(R) + "squeeze/value")},
         {aStick, pr(std::string(L) + "thumbstick")}, {aStick, pr(std::string(R) + "thumbstick")},
         {aMenu, pr(std::string(L) + "b/click")}, {aMenu, pr(std::string(R) + "b/click")},
-        {aContext, pr(std::string(L) + "a/click")}, {aContext, pr(std::string(R) + "a/click")}});
+        {aContext, pr(std::string(L) + "a/click")}, {aContext, pr(std::string(R) + "a/click")},
+        {aHaptic, HL}, {aHaptic, HR}});
     if (handInteraction)   // hands: the system's pinch (its "select") and grasp, as on its own UI
         suggest("/interaction_profiles/ext/hand_interaction_ext", {
             {aAim, pr(std::string(L) + "aim/pose")}, {aAim, pr(std::string(R) + "aim/pose")},
@@ -454,6 +459,15 @@ bool Headset::frame(Interaction& ia, Renderer& r) {
         }
         ia.headPose = head;
         ia.update(hin, dt);
+        for (int i = 0; i < 2; ++i) if (ia.haptic[i] > 0) {        // the ticks it asked for: short pulses on that controller
+            if (aHaptic != XR_NULL_HANDLE && !handProfile[i]) {
+                XrHapticVibration v{XR_TYPE_HAPTIC_VIBRATION}; v.duration = 12000000; v.frequency = XR_FREQUENCY_UNSPECIFIED;
+                v.amplitude = std::min(ia.haptic[i], 1.f);
+                XrHapticActionInfo hi{XR_TYPE_HAPTIC_ACTION_INFO}; hi.action = aHaptic; hi.subactionPath = hands[i];
+                xrApplyHapticFeedback(session, &hi, (const XrHapticBaseHeader*)&v);
+            }
+            ia.haptic[i] = 0;
+        }
         // the UI's windows as compositor layers, once the app's UI is up (they need its size)
         if (!uiTried && !ia.panel.sheets.empty() && ia.panel.tex) { uiTried = true; ia.uiLayers = makeUiChains(ia.panel.pxW, ia.panel.pxH); }
         if (ia.uiLayers) updateUi(ia, r);

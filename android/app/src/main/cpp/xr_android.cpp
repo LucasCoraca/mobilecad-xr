@@ -112,6 +112,9 @@ void hookCallbacks() {
         JNIEnv* e = env(); e->CallVoidMethod(gActivity, method(e, "onXrViewport", "(IFFFFFFF)V"), action, o.x, o.y, o.z, d.x, d.y, d.z, depth);
     };
     gIa.onContextMenu = [] { JNIEnv* e = env(); e->CallVoidMethod(gActivity, method(e, "onXrContextMenu", "()V")); };
+    // B / Y held: the context menu's items as a marking menu around the controller (Java answers with nativeSetPieItems)
+    gIa.onPieOpen = [] { JNIEnv* e = env(); e->CallVoidMethod(gActivity, method(e, "onXrPieOpen", "()V")); };
+    gIa.onPieSelect = [](int i) { JNIEnv* e = env(); e->CallVoidMethod(gActivity, method(e, "onXrPieSelect", "(I)V"), i); };
 }
 
 /** The headset loop: EGL pbuffer context (OpenXR renders into its own swapchains), session, frames until told to stop. */
@@ -233,6 +236,17 @@ JNIEXPORT void JNICALL Java_app_mobilecad_xr_XrActivity_nativeSetSelection(JNIEn
             else if (s.rfind("Edge", 0) == 0) gIa.selected.push_back({m, 'E', std::atoi(s.c_str() + 4)});
         }
     });
+}
+
+/** The marking menu's items (the context menu's, in its order), with the destructive ones marked. */
+JNIEXPORT void JNICALL Java_app_mobilecad_xr_XrActivity_nativeSetPieItems(JNIEnv* e, jobject, jobjectArray labels, jbooleanArray danger) {
+    std::vector<std::string> ls; std::vector<bool> ds;
+    jsize n = e->GetArrayLength(labels); std::vector<jboolean> db(n); e->GetBooleanArrayRegion(danger, 0, n, db.data());
+    for (jsize i = 0; i < n; ++i) {
+        auto s = (jstring)e->GetObjectArrayElement(labels, i); const char* c = e->GetStringUTFChars(s, nullptr);
+        ls.emplace_back(c); ds.push_back(db[i]); e->ReleaseStringUTFChars(s, c); e->DeleteLocalRef(s);
+    }
+    post([ls, ds] { gIa.setPieItems(ls, ds); });
 }
 
 /** What MobileCAD's view draws over the model: preselection, fade (sketch editing), overlay lines / dots / labels. */

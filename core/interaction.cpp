@@ -316,9 +316,77 @@ void Interaction::handInput(HandInput hands[2], float dt) {
     if (pinchZoom) for (int i = 0; i < 2; ++i) { if (hands[i].select > 0.55f) hands[i].squeeze = 1; hands[i].select = 0; }
 }
 
+void Interaction::steady(HandInput hands[2], float dt) {
+    for (int i = 0; i < 2; ++i) {
+        HandInput& h = hands[i];
+        if (!h.active || h.poke || aimSmoothing <= 0) { aimInit[i] = false; continue; }
+        Q raw = h.aim.rot;
+        if (!aimInit[i]) { aimRot[i] = aimRaw[i] = raw; aimVel[i] = Q{0, 0, 0, 0}; aimInit[i] = true; continue; }
+        // how fast the controller turns: still, it is steadied; swung (2 rad/s and more), the ray follows at once
+        Q d = raw * conj(aimRaw[i]); aimRaw[i] = raw;
+        float turn = 2 * std::acos(std::min(1.f, std::fabs(d.w))) / std::max(dt, 1e-3f);
+        float st = aimSmoothing * std::clamp(1 - turn / 2.f, 0.f, 1.f);
+        if (h.select > 0.08f && h.select <= 0.55f && !prevTrig[i]) st = 0.25f;        // the trigger on its way down
+        aimRot[i] = smoothDamp(aimRot[i], raw, aimVel[i], st, dt);
+        h.aim.rot = aimRot[i];
+    }
+}
+
+static const float kPieHover = 0.04f, kPieActive = 0.08f;   // m from where B / Y went down: pointing at an item, choosing it
+
+void Interaction::setPieItems(const std::vector<std::string>& labels, const std::vector<bool>& danger) {
+    if (pie.hand < 0) return;
+    pie.labels = labels; pie.danger = danger; pie.danger.resize(labels.size()); pie.waiting = false;
+}
+
+void Interaction::pieInput(const HandInput hands[2], float dt) {
+    if (pie.hand >= 0) {
+        const HandInput& h = hands[pie.hand];
+        pie.t += dt;
+        // the controller's travel since the press, on the plane facing the viewer: its direction picks the item
+        // (clockwise from up, the first item at the top), its length whether one is pointed at or chosen
+        V3 d = h.aim.pos - pie.origin; float x = dot(d, pie.right), y = dot(d, pie.up), r = std::hypot(x, y);
+        pie.at = pie.origin + pie.right * x + pie.up * y;
+        int n = (int)pie.labels.size(), hot = -1;
+        if (n > 0 && r > kPieHover) {
+            float deg = std::atan2(x, y) * 57.29578f; if (deg < 0) deg += 360;
+            hot = (int)std::floor((deg + 180.f / n) / 360.f * n) % n;
+        }
+        if (hot >= 0 && hot != pie.hot) haptic[pie.hand] = std::max(haptic[pie.hand], 0.25f);
+        pie.hot = hot;
+        auto close = [&](int pick) {
+            int hand = pie.hand; pie = Pie{};
+            if (pick >= 0) { haptic[hand] = std::max(haptic[hand], 0.6f); if (onPieSelect) onPieSelect(pick); }
+        };
+        if (hot >= 0 && r > kPieActive) close(hot);
+        else if (!h.active || !h.context) {
+            bool tap = pie.t < 0.4f && r <= kPieHover;
+            close(hot);
+            if (hot < 0 && tap && onContextMenu) onContextMenu();
+        }
+    }
+    for (int i = 0; i < 2; ++i) {
+        const HandInput& h = hands[i];
+        if (pie.hand < 0 && h.active && h.context && !prevStick[i]) {
+            if (!onPieOpen) { if (onContextMenu) onContextMenu(); }
+            else {
+                // the ring stands upright, turned to face the viewer: up is up, however low the hand is held
+                pie = Pie{}; pie.hand = i; pie.origin = pie.at = h.aim.pos; pie.waiting = true;
+                V3 f = h.aim.pos - headPose.pos; f.y = 0;
+                if (len(f) < 0.05f) { f = rotate(headPose.rot, V3{0, 0, -1}); f.y = 0; }
+                pie.right = norm(cross(norm(f), V3{0, 1, 0})); if (len(pie.right) < 0.5f) pie.right = {1, 0, 0};
+                pie.up = {0, 1, 0};
+                onPieOpen();
+            }
+        }
+        prevStick[i] = h.active && h.context;
+    }
+}
+
 void Interaction::update(const HandInput in[2], float dt) {
     HandInput hands[2] = {in[0], in[1]};
     handInput(hands, dt);
+    steady(hands, dt);
     if (placedEmpty && !scene.empty()) placeModel(placeHead);
     bool trig[2], squeeze[2], host = (bool)onViewport;
     for (int i = 0; i < 2; ++i) {
@@ -328,8 +396,13 @@ void Interaction::update(const HandInput in[2], float dt) {
         hover[i] = (target[i].panel || host) ? ElemRef{} : target[i].elem;
         if (h.active && h.menu && !prevMenu[i] && onMenu) onMenu();
         prevMenu[i] = h.active && h.menu;
-        if (h.active && h.context && !prevStick[i] && onContextMenu) onContextMenu();
-        prevStick[i] = h.active && h.context;
+    }
+    pieInput(hands, dt);
+    // a light tick when what the ray is on changes in the app's view (its preselection): a face, an edge, a point
+    if (!(hostHover == prevHostHover)) {
+        int i = viewHand >= 0 ? viewHand : hands[1].active ? 1 : 0;
+        if (hostHover.valid()) haptic[i] = std::max(haptic[i], 0.1f);
+        prevHostHover = hostHover;
     }
     // ---- the app's view: a pressed trigger off the panel is a finger on it, a ray pointing into the scene a hovering mouse
     if (host) {
@@ -341,6 +414,7 @@ void Interaction::update(const HandInput in[2], float dt) {
         if (viewHand < 0 && pointerHand < 0) for (int i : {1, 0})
             if (trig[i] && !prevTrig[i] && !target[i].panel && !target[i].badge && !target[i].rim && !grab[i].on) {
                 V3 o, d; modelRay(hands[i].aim, &o, &d); viewHand = i; viewHover = false;
+                haptic[i] = std::max(haptic[i], 0.3f);
                 onViewport(0, o, d, depthMm(i, hands[i].aim)); break;
             }
         int hv = -1;
@@ -357,6 +431,7 @@ void Interaction::update(const HandInput in[2], float dt) {
     if (pointerHand < 0) {
         for (int i : {1, 0}) if (trig[i] && !prevTrig[i] && target[i].panel && !grab[i].on) {
             pointerHand = i; hoverX = target[i].px; hoverY = target[i].py; pointerSheet = target[i].sheet;
+            haptic[i] = std::max(haptic[i], 0.3f);
             if (onPanelPointer) onPanelPointer(PanelDown, hoverX, hoverY);
             break;
         }
@@ -462,6 +537,8 @@ void Interaction::update(const HandInput in[2], float dt) {
         }
     }
     badgeHot = target[1].badge ? badgeButtonAt(target[1].px) : target[0].badge ? badgeButtonAt(target[0].px) : -1;
+    if (badgeHot >= 0 && badgeHot != prevBadgeHot) { int i = target[1].badge ? 1 : 0; haptic[i] = std::max(haptic[i], 0.15f); }
+    prevBadgeHot = badgeHot;
     rimHot = target[0].rim || target[1].rim || (grab[0].on && grab[0].plate) || (grab[1].on && grab[1].plate);
     last[0] = hands[0]; last[1] = hands[1];
 }
@@ -662,6 +739,47 @@ void Interaction::renderPointers(Renderer& r, const M4& vp, V3 eye) {
     }
     r.drawLines(l, vp);
     r.drawDots(dots, 14.f, vp);
+    if (pie.hand >= 0) renderPie(r, vp, eye);
+}
+
+void Interaction::renderPie(Renderer& r, const M4& vp, V3 eye) {
+    // the ring you have to leave before an item is pointed at, the travel so far, and the items around it facing you,
+    // the one pointed at pushed out and lit
+    Lines l; std::vector<float> dots;
+    const int kSeg = 40;
+    for (int k = 0; k < kSeg; ++k) {
+        float a0 = 6.2831853f * k / kSeg, a1 = 6.2831853f * (k + 1) / kSeg;
+        l.add(pie.origin + (pie.right * std::sin(a0) + pie.up * std::cos(a0)) * kPieHover,
+              pie.origin + (pie.right * std::sin(a1) + pie.up * std::cos(a1)) * kPieHover, V3{0.55f, 0.60f, 0.66f});
+    }
+    l.add(pie.origin, pie.at, pie.hot >= 0 ? V3{0.40f, 0.68f, 1.f} : V3{0.75f, 0.78f, 0.82f});
+    dots.insert(dots.end(), {pie.at.x, pie.at.y, pie.at.z, 1, 1, 1});
+    glDisable(GL_DEPTH_TEST);
+    r.drawLines(l, vp);
+    r.drawDots(dots, 12.f, vp);
+    glDisable(GL_DEPTH_TEST);
+    int n = (int)pie.labels.size();
+    for (int k = 0; k < n; ++k) {
+        bool hot = k == pie.hot, danger = pie.danger[k];
+        std::string key = std::string("pie\x01") + pie.labels[k] + (hot ? "\x01h" : "") + (danger ? "\x01d" : "");
+        auto it = labelTex.find(key);
+        if (it == labelTex.end()) {
+            std::string t = pie.labels[k].substr(0, 32); int W = Canvas::textWidth(t, 3) + 48, H = 72;
+            Canvas cv(W, H);
+            if (hot) cv.rect(0, 0, W, H, 42, 111, 201, H / 2); else cv.rect(0, 0, W, H, 30, 34, 40, H / 2);
+            int tr = danger && !hot ? 255 : 240, tg = danger && !hot ? 120 : 243, tb = danger && !hot ? 110 : 247;
+            cv.text(24, (H - 48) / 2, t, 3, tr, tg, tb);
+            it = labelTex.emplace(key, std::make_pair(r.makeTexture(W, H, cv.px.data()), std::make_pair(W, H))).first;
+        }
+        float a = 6.2831853f * k / n, rad = hot ? 0.095f : 0.075f;
+        V3 p = pie.origin + (pie.right * std::sin(a) + pie.up * std::cos(a)) * rad;
+        V3 z = norm(eye - p), x = norm(cross(V3{0, 1, 0}, z)); if (len(x) < 0.5f) x = {1, 0, 0}; V3 y = cross(z, x);
+        float h = 0.02f, w = h * it->second.second.first / it->second.second.second;
+        // items on the sides hang outwards from their point, so long labels do not run into the ring
+        float side = std::sin(a); V3 c = p + x * (w * 0.5f * (side > 0.3f ? 1.f : side < -0.3f ? -1.f : 0.f));
+        r.drawPanel(it->second.first, false, Pose{c, fromBasis(x, y, z), 1}, w, h, h / 2, vp);
+    }
+    glEnable(GL_DEPTH_TEST);
 }
 
 }  // namespace mcxr
