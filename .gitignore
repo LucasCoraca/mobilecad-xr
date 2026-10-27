@@ -10,3 +10,4 @@ android/app/.cxx/
 android/app/src/x86/
 android/app/src/arm64/assets/
 android/app/src/arm64/jniLibs/
+android/app/libs/Qt6Android.jar

@@ -16,7 +16,7 @@ android {
         minSdk = 32                      // Meta Horizon OS store guidance: min 32, target 34
         targetSdk = 34
         versionCode = ((System.currentTimeMillis() / 60000L) - 29454720L).toInt()
-        versionName = "0.9.4"
+        versionName = "0.9.5"
         externalNativeBuild { cmake { arguments += listOf("-DANDROID_STL=c++_shared", "-DMOBILECAD_DIR=" + mobilecad.absolutePath) } }
     }
     ndkVersion = "29.0.14206865"
@@ -60,7 +60,7 @@ dependencies {
     implementation("androidx.core:core-ktx:1.13.1")
     implementation("com.caverock:androidsvg-aar:1.4")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
-    implementation(files(mobilecad.resolve("app/app/libs/Qt6Android.jar")))
+    implementation(files("libs/Qt6Android.jar"))      // staged by package_runtime.py (built with Qt)
 }
 
 // see the comment in android {}: refresh the bridge Python in each flavor's staged runtime before its assets are merged
