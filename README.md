@@ -62,7 +62,11 @@ finger on the phone you do in 3D with the trigger, with the same tools and the s
 | Thumbstick | Scroll | Up/down scales, left/right turns (about the origin) · **walking**: forward aims a teleport, let go = go there, back = cancel; left/right = snap turn 30° |
 | B / Y | | The view's context menu (a two-finger tap on the phone) |
 | A / X | Put the windows back and the table in front of you | |
+| ☰ button on the left controller (right ray + trigger) | Hide all the windows · again: show them in front of where you look, laid out as you left them (a menu or dialog that opens while they are hidden brings them back) | |
 | Scale badge (under the tool bars) | **TRUE SIZE**: the model at its real size, 1 mm = 1 mm · **FIT VIEW**: back to the scaled view · **WALK**: walk through the model at 1:1 (below) · **PASSTHROUGH**: your room on / off | |
+
+The windows are part of the room: a part of the model held between you and a window covers it, and the ray then
+points at the part, not at the window behind it.
 
 With passthrough off, your controllers are shown in your hands as Quest 3 Touch Plus models, their trigger, grip, stick
 and buttons moving as you use them, and your hands as a hand model. In passthrough you see your real controllers and
@@ -151,6 +155,7 @@ sim/run.sh          # then open http://localhost:6080/vnc.html and press Connect
 sim/run.sh --test   # automated: scripted controller picks on the model, grabs and moves it, clicks a panel button, switches true size on and off;
                     # then the same with tracked hands (pinch, fist, a finger pressing the button) and a two-hand pinch zoom;
                     # then walk mode on the BIM example: WALK, teleport hops up to its wall, the wall refused, snap turn, WALK off
+                    # then the windows: the model in front of one hides it, the ☰ button hides / shows them, a dialog brings them back
 sim/run.sh --hands  # interactive, the controllers shown as hands: trigger = pinch, grip = fist, B / Y = middle-finger pinch
 ```
 

@@ -29,6 +29,8 @@ public:
     void drawMesh(const GpuMesh& m, const M4& model, const M4& viewProj, V3 eye, V3 color, float alpha = 1.f, GLuint tex = 0);
     /** Points (x y z r g b; the second vertex of each Lines pair is ignored) drawn as round dots of `sizePx` pixels. */
     void drawDots(const std::vector<float>& pts, float sizePx, const M4& viewProj);
+    /** A w x h rectangle centred on `center` (its XY plane), for the depth buffer: the caller masks the colour. */
+    void drawRect(const Pose& center, float w, float h, const M4& viewProj);
     /** A textured rectangle centred on `center` (local X = width, local Y = height), corners rounded by `radius` (m). */
     /** `uv`: the part of the image shown (x y w h, 0..1, y down), whole by default; `alpha`: the image's own transparency
      *  (a window surface: premultiplied), else opaque. */

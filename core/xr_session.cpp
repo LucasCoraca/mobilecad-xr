@@ -501,7 +501,8 @@ bool Headset::frame(Interaction& ia, Renderer& r) {
             }
             ia.pointersSeparate = overOk && ia.uiLayers;
             if (ia.pointersSeparate) {
-                // the hands' layer: transparent, the model's depth first so a hand behind the model is hidden by it
+                // the layer over the UI's windows: transparent; the model where it is in front of a window, then the hands (the model's
+                // depth first, so a hand behind the model is hidden by it)
                 bool st = r.seeThrough; r.seeThrough = true;
                 for (int e = 0; e < 2; ++e) {
                     Eye& eye = over[e]; uint32_t idx = 0;
@@ -521,6 +522,7 @@ bool Headset::frame(Interaction& ia, Renderer& r) {
                     M4 proj = projectionFov(views[e].fov.angleLeft, views[e].fov.angleRight, views[e].fov.angleUp, views[e].fov.angleDown, 0.02f, 50.f);
                     M4 vp = mul(proj, viewFrom(ep));
                     r.beginView(target, 0, 0, eye.w, eye.h, true);
+                    ia.renderOverUi(r, vp, ep.pos);                 // the model in front of a window covers it
                     if (!ia.scene.empty()) {
                         glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
                         r.drawScene(ia.scene, ia.model, vp, ep.pos, ElemRef{}, {}, 1.f);

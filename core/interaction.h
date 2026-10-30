@@ -8,6 +8,8 @@
 //   both hands grabbing:  scale and turn the model between the hands
 //   thumbstick (not on the panel): up/down scales, left/right turns the model
 //   menu / A / X:         onMenu (the app shows / recentres the panel, or switches documents)
+//   menu button (round, on the left controller; right ray + trigger): hides all the windows / shows them again in front
+//                         of where you look
 //
 // With `onViewport` set (MobileCAD XR) the space around the panel is the app's 3D view: the trigger anywhere off the panel
 // is a finger on that view (tap, drag, double tap) and pointing is a hovering mouse, so every tool of the app (picking,
@@ -148,6 +150,15 @@ public:
     /** The hands, controllers and their rays. Drawn by render() unless `pointersSeparate` (the headset then draws them in a
      *  layer of their own over the UI's windows, so a finger touching a window is seen in front of it). */
     void renderPointers(Renderer& r, const M4& viewProj, V3 eye);
+    /** The UI's windows are compositor layers over the scene: this draws, into a transparent image over them, the parts of
+     *  the model that are nearer than a window, so a part held in front of a window hides it (as it would in the room). */
+    void renderOverUi(Renderer& r, const M4& viewProj, V3 eye);
+    ElemRef hoverRef() const;               // the preselected element the scene highlights
+    /** The menu button on the left controller (the right ray's trigger on it): hides all the windows, or brings them back
+     *  in front of where you look. A dialog or menu opening while they are hidden brings them back too. */
+    void toggleUi(const Pose& head);
+    bool uiHidden = false;
+    Pose menuButtonPose() const;            // world pose of the menu button (for scripted tests too)
     bool pointersSeparate = false;
     bool showControllers = true;
     /** The hand / controller models (assets/models: hand-left, hand-right, touch-plus-left, touch-plus-right .glb). */
@@ -184,6 +195,9 @@ private:
     Pose fitPose; bool fitSaved = false;
     bool placedEmpty = false; Pose placeHead;  // placed before the document had a shape: size it again when it gets one      // the pose to return to when true size is switched off
     V3 viewer{0, 1.6f, 0};
+    bool triggerOnMenuButton[2] = {false, false}; size_t hiddenPopups = 0; GLuint menuBtnTex[4] = {0, 0, 0, 0};
+    bool menuButtonRay(const Pose& aim, float* t) const;
+    bool onUi(int i) const { return target[i].panel || target[i].badge || target[i].menuButton; }
     bool triggerOnBadge[2] = {false, false}; int badgeHot = -1;    // the badge button pointed at (0 true size, 1 passthrough, 2 walk)
     // walk mode: the teleport arc of the hand aiming (`tpHand`), where it lands and whether one may stand there
     bool aiming[2] = {false, false}, snapReady[2] = {true, true}; int tpHand = -1;
@@ -201,7 +215,7 @@ private:
     GLuint badgeTex = 0; std::string badgeDrawn;
     Pose badgePose() const;
     float lowestY() const;
-    struct Target { bool panel = false, badge = false, rim = false; float t = 1e30f; float px = 0, py = 0; int sheet = -1; ElemRef elem; V3 point; };
+    struct Target { bool panel = false, badge = false, rim = false, menuButton = false; float t = 1e30f; float px = 0, py = 0; int sheet = -1; ElemRef elem; V3 point; };
     std::map<int, GLuint> plateTexs; bool rimHot = false;    // plate textures by cell count (and highlight)
     Pose platePose() const;
     bool rimRay(const Pose& aim, float* t) const;

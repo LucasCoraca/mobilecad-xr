@@ -6,6 +6,8 @@
 //   mobilecad-xr-desktop [--autotest] [--true-size] [--sheets] [--screenshot out.ppm --frames N] scene.mcxr|dir ...
 //   --sheets: the stand-in panel cut into two surfaces, shown as compositor layers as on the Quest (to test that path)
 //   --autotest --walk: walk mode instead: WALK on the badge, teleport, a wall refused, snap turn, WALK off
+//   --autotest --sheets --ui: the model in front of a window hides it (and takes the ray); the left controller's menu button
+//                     hides the windows / brings them back where you look; a dialog opening brings them back
 #include <dirent.h>
 #include <algorithm>
 #include <chrono>
@@ -38,7 +40,7 @@ static void writePpm(const char* path, GLuint tex, int w, int h) {
 
 
 int main(int argc, char** argv) {
-    std::vector<std::string> files; const char* shot = nullptr; int shotFrames = 120; bool autotest = false, startTrue = false, sheets = false, hands = false, demo = false, walkTest = false;
+    std::vector<std::string> files; const char* shot = nullptr; int shotFrames = 120; bool autotest = false, startTrue = false, sheets = false, hands = false, demo = false, walkTest = false, uiTest = false;
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
         if (a == "--screenshot" && i + 1 < argc) shot = argv[++i];
@@ -48,6 +50,7 @@ int main(int argc, char** argv) {
         else if (a == "--hands") hands = true;
         else if (a == "--demo") demo = true;
         else if (a == "--walk") walkTest = true;
+        else if (a == "--ui") uiTest = true;
         else if (a == "--true-size") startTrue = true;
         else if (DIR* d = opendir(a.c_str())) {
             while (dirent* e = readdir(d)) { std::string n = e->d_name; if (n.size() > 5 && n.substr(n.size() - 5) == ".mcxr") files.push_back(a + "/" + n); }
@@ -321,6 +324,67 @@ int main(int argc, char** argv) {
                     std::fprintf(stderr, "mcxr autotest: walk off, scale %s\n", ia.scaleText().c_str());
                     autoDone = true; bool all = true;
                     for (auto& s : steps) { std::fprintf(stderr, "mcxr autotest: %-44s %s\n", s.what, s.ok ? "PASS" : "FAIL"); all &= s.ok; }
+                    std::fprintf(stderr, "mcxr autotest: %s\n", all ? "PASS" : "FAIL");
+                }
+            }
+            (void)t;
+        };
+    }
+    // --autotest --sheets --ui (see the top)
+    Pose placedPanel{};
+    if (autotest && uiTest) {
+        steps = {{"ui: the model in front of a window takes the ray"}, {"ui: menu button hides the windows"},
+                 {"ui: menu button shows them where you look"}, {"ui: a dialog opening shows them"}};
+        hs.inputOverride = [&](HandInput h[2], const Pose& head, double t) {
+            if (ia.scene.empty() || ia.panel.sheets.empty() || t < 1.0 || autoDone) return;
+            HandInput& r = h[1]; r = {}; r.active = true;
+            HandInput& l = h[0]; l = {}; l.active = true;
+            V3 f = rotate(head.rot, V3{0, 0, -1}); f.y = 0; f = norm(f); V3 right = cross(f, V3{0, 1, 0});
+            l.grip = l.aim = {head.pos + f * 0.35f - right * 0.15f - V3{0, 0.3f, 0}, lookRot(f), 1};
+            V3 from = head.pos + right * 0.15f - V3{0, 0.25f, 0};
+            auto aim = [&](V3 to) { r.aim = {from, lookRot(to - from), 1}; r.grip = r.aim; };
+            auto next = [&]() { ++phase; pf = 0; };
+            auto fwd = [](const Pose& p) { V3 z = rotate(p.rot, V3{0, 0, 1}); z.y = 0; return norm(z); };
+            ++pf;
+            if (phase == 0) {                                          // the model between you and the left window
+                Sheet s = ia.panel.sheets[0]; V3 c = apply(ia.panel.pose, s.local.pos);
+                if (pf == 1) { float sc = 0.15f / std::max(ia.scene.radius(), 1e-3f); ia.model = {from + (c - from) * 0.45f - rotate(Q{0,0,0,1}, ia.scene.center()) * sc, Q{0, 0, 0, 1}, sc}; }
+                aim(c);
+                if (pf == 6) {
+                    steps[0].ok = ia.hover[1].valid();
+                    std::fprintf(stderr, "mcxr autotest: ray through the model at a window: %s\n", ia.hover[1].valid() ? "the model" : "the window");
+                    if (std::getenv("MCXR_UI_SHOT")) { std::fprintf(stderr, "mcxr autotest: holding for a picture\n"); return; }
+                    next();
+                }
+            } else if (phase == 1) {                                   // the menu button: hide
+                aim(ia.menuButtonPose().pos);
+                if (pf == 5) r.select = 1;
+                if (pf == 10) {
+                    steps[1].ok = ia.uiHidden && !ia.panel.visible && ia.uiQuads().empty();
+                    std::fprintf(stderr, "mcxr autotest: menu button: hidden %d, %zu window layers\n", (int)ia.uiHidden, ia.uiQuads().size());
+                    placedPanel = ia.panel.pose;                      // placed facing where you look (the head stays still here)
+                    ia.panel.pose.rot = qnorm(ia.panel.pose.rot * axisAngle({0, 1, 0}, 1.2f));   // as if you had turned away since
+                    next();
+                }
+            } else if (phase == 2) {                                   // again: shown, facing where you look
+                aim(ia.menuButtonPose().pos);
+                if (pf == 5) r.select = 1;
+                if (pf == 10) {
+                    float a = std::acos(std::min(1.f, dot(fwd(ia.panel.pose), fwd(placedPanel)))) * 57.29578f;
+                    steps[2].ok = !ia.uiHidden && ia.panel.visible && a < 1.f && ia.uiQuads().size() == 2;
+                    std::fprintf(stderr, "mcxr autotest: menu button: shown %d, %.1f degrees off where you look\n", (int)ia.panel.visible, a);
+                    next();
+                }
+            } else if (phase == 3) {                                   // hidden, then a dialog opens
+                aim(ia.menuButtonPose().pos);
+                if (pf == 5) r.select = 1;
+                if (pf == 10) ia.panel.popups = {100, 100, 200, 150};
+                if (pf == 14) {
+                    steps[3].ok = !ia.uiHidden && ia.panel.visible;
+                    std::fprintf(stderr, "mcxr autotest: dialog while hidden: shown %d\n", (int)ia.panel.visible);
+                    ia.panel.popups.clear();
+                    autoDone = true; bool all = true;
+                    for (auto& s : steps) { std::fprintf(stderr, "mcxr autotest: %-50s %s\n", s.what, s.ok ? "PASS" : "FAIL"); all &= s.ok; }
                     std::fprintf(stderr, "mcxr autotest: %s\n", all ? "PASS" : "FAIL");
                 }
             }

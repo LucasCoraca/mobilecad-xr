@@ -8,6 +8,7 @@ namespace mcxr {
 static V3 forward(const Pose& p) { return rotate(p.rot, V3{0, 0, -1}); }
 static Pose unscaled(const Pose& p) { return Pose{p.pos, p.rot, 1}; }
 static const float kTrueScale = 0.001f;              // scene mm -> world m
+static const float kMenuBtn = 0.032f;                               // the menu button on the left controller (m)
 static const float kBadgeW = 0.70f, kBadgeH = 0.06f; static const int kBadgePx = 2000;   // badge size (m), pixels per metre
 static const int kSizeBtnW = 280, kRoomBtnW = 316, kWalkBtnW = 200;               // its buttons (px), from the right: size, room, walk
 static const float kTpSpeed = 10.f, kSnapTurn = 0.5235988f;                       // teleport arc launch speed (m/s), snap turn (30°)
@@ -177,7 +178,7 @@ void Interaction::teleportArc(const Pose& aim) {
 }
 
 void Interaction::walkStick(int i, const HandInput& h) {
-    bool free = h.active && !target[i].panel && !target[i].badge;
+    bool free = h.active && !onUi(i);
     if (aiming[i]) {
         if (!h.active || h.stickY < -0.6f) { aiming[i] = false; tpHand = -1; tpArc.clear(); }       // pulled back: cancel
         else if (std::fabs(h.stickY) < 0.3f && std::fabs(h.stickX) < 0.5f) {                        // let go: go there
@@ -227,6 +228,7 @@ int Interaction::badgeButtonAt(float u) const {
 }
 
 void Interaction::placePanel(const Pose& head) {
+    if (uiHidden) { uiHidden = false; panel.visible = true; }
     V3 f = forward(head); f.y = 0; f = len(f) > 1e-3f ? norm(f) : V3{0, 0, -1};
     if (!panel.sheets.empty()) {                                     // the sheets surround the viewer, each in its place
         panel.pose = {head.pos, facing(head.pos, head.pos + f), 1};
@@ -238,6 +240,24 @@ void Interaction::placePanel(const Pose& head) {
     panel.pose = {c, facing(head.pos, c), 1};
     // tilt back a little, like a drafting table
     panel.pose.rot = qnorm(panel.pose.rot * axisAngle({1, 0, 0}, -0.12f));
+}
+
+void Interaction::toggleUi(const Pose& head) {
+    if (!uiHidden) { uiHidden = true; panel.visible = false; hiddenPopups = panel.popups.size(); return; }
+    uiHidden = false; panel.visible = true;
+    // back where you are looking, laid out as you left them (the windows you moved stay where you put them, around you)
+    V3 f = forward(head); f.y = 0; f = len(f) > 1e-3f ? norm(f) : V3{0, 0, -1};
+    if (!panel.sheets.empty()) panel.pose = {head.pos, facing(head.pos, head.pos + f), 1}; else placePanel(head);
+}
+
+Pose Interaction::menuButtonPose() const {                             // on top of the left controller, tilted towards you
+    Pose p = unscaled(last[0].grip);
+    p.pos = p.pos + rotate(p.rot, {0, 0.035f, 0.045f}); p.rot = qnorm(p.rot * axisAngle({1, 0, 0}, -0.9f));
+    return p;
+}
+
+bool Interaction::menuButtonRay(const Pose& aim, float* t) const {
+    float u, v; return last[0].active && !last[0].hand && rectRay(aim, menuButtonPose(), kMenuBtn, kMenuBtn, t, &u, &v, false);
 }
 
 bool Panel::solid(float px, float py) const {
@@ -335,8 +355,8 @@ Interaction::Target Interaction::aimAt(const Pose& aim) const {
     }
     float t, px, py;
     int sh = -1;
-    // the UI's surfaces are drawn over the model, so what is on them wins wherever the ray meets them
-    if (panelRay(aim, &t, &px, &py, false, &sh) && (t < out.t || panel.seeThrough)) { out = {}; out.panel = true; out.t = t; out.px = px; out.py = py; out.sheet = sh; }
+    // the nearer wins: a window behind a part of the model is hidden by it (renderOverUi), so the ray hits the part
+    if (panelRay(aim, &t, &px, &py, false, &sh) && t < out.t) { out = {}; out.panel = true; out.t = t; out.px = px; out.py = py; out.sheet = sh; }
     if (badgeRay(aim, &t, &px) && t < out.t) { out = {}; out.badge = true; out.t = t; out.px = px; }
     if (!out.panel && !out.badge && rimRay(aim, &t) && t < out.t) { out = {}; out.rim = true; out.t = t; }
     return out;
@@ -388,7 +408,7 @@ void Interaction::handInput(HandInput hands[2], float dt) {
     // the first hand started on the app's view is called off.
     bool both = hands[0].active && hands[1].active && hands[0].hand && hands[1].hand && !hands[0].poke && !hands[1].poke;
     bool p0 = hands[0].select > 0.55f, p1 = hands[1].select > 0.55f;
-    if (!pinchZoom && both && p0 && p1 && pointerHand < 0 && !target[0].panel && !target[1].panel && !target[0].badge && !target[1].badge) {
+    if (!pinchZoom && both && p0 && p1 && pointerHand < 0 && !onUi(0) && !onUi(1)) {
         pinchZoom = true;
         if (viewHand >= 0 && onViewport) { onViewport(5, V3{}, V3{}, 0); viewHand = -1; }
         triggerOnModel[0] = triggerOnModel[1] = false;
@@ -399,6 +419,9 @@ void Interaction::handInput(HandInput hands[2], float dt) {
 
 void Interaction::update(const HandInput in[2], float dt) {
     HandInput hands[2] = {in[0], in[1]};
+    // hidden windows come back for a dialog or menu that opens (a context menu, a value to type): it is waiting for you
+    if (uiHidden && panel.popups.size() > hiddenPopups) toggleUi(headPose);
+    if (uiHidden) hiddenPopups = std::min(hiddenPopups, panel.popups.size());
     handInput(hands, dt);
     if (placedEmpty && !scene.empty()) placeModel(placeHead);
     bool trig[2], squeeze[2], host = (bool)onViewport;
@@ -406,6 +429,8 @@ void Interaction::update(const HandInput in[2], float dt) {
         const HandInput& h = hands[i];
         trig[i] = h.active && h.select > 0.55f; squeeze[i] = h.active && h.squeeze > 0.55f;
         target[i] = h.active && !h.noRay ? aimAt(h.aim) : Target{};
+        // the menu button on the left controller, for the other hand's ray
+        float wt; if (i == 1 && h.active && !h.noRay && menuButtonRay(h.aim, &wt) && wt < target[i].t) { target[i] = {}; target[i].menuButton = true; target[i].t = wt; }
         hover[i] = (target[i].panel || host) ? ElemRef{} : target[i].elem;
         if (h.active && h.menu && !prevMenu[i] && onMenu) onMenu();
         prevMenu[i] = h.active && h.menu;
@@ -420,12 +445,12 @@ void Interaction::update(const HandInput in[2], float dt) {
             else { onViewport(2, o, d, 0); viewHand = -1; }
         }
         if (viewHand < 0 && pointerHand < 0) for (int i : {1, 0})
-            if (trig[i] && !prevTrig[i] && !target[i].panel && !target[i].badge && !target[i].rim && !grab[i].on) {
+            if (trig[i] && !prevTrig[i] && !onUi(i) && !target[i].rim && !grab[i].on) {
                 V3 o, d; modelRay(hands[i].aim, &o, &d); viewHand = i; viewHover = false;
                 onViewport(0, o, d, depthMm(i, hands[i].aim)); break;
             }
         int hv = -1;
-        if (viewHand < 0) for (int i : {1, 0}) if (hands[i].active && !trig[i] && !target[i].panel && !target[i].badge && !target[i].rim && !grab[i].on) { hv = i; break; }
+        if (viewHand < 0) for (int i : {1, 0}) if (hands[i].active && !trig[i] && !onUi(i) && !target[i].rim && !grab[i].on) { hv = i; break; }
         if (hv >= 0) { V3 o, d; modelRay(hands[hv].aim, &o, &d); onViewport(3, o, d, depthMm(hv, hands[hv].aim)); viewHover = true; }
         else if (viewHover && viewHand < 0) { onViewport(4, V3{}, V3{}, 0); viewHover = false; }
     }
@@ -459,7 +484,7 @@ void Interaction::update(const HandInput in[2], float dt) {
         bool trigStart = trig[i] && !prevTrig[i], sqStart = squeeze[i] && !prevSqueeze[i];
         if (trigStart && pointerHand != i) {
             triggerT[i] = 0; triggerStart[i] = h.aim.pos;
-            triggerOnModel[i] = !target[i].panel && !target[i].badge; triggerOnBadge[i] = target[i].badge;
+            triggerOnModel[i] = !onUi(i); triggerOnBadge[i] = target[i].badge; triggerOnMenuButton[i] = target[i].menuButton;
         }
         if (trig[i]) triggerT[i] += dt;
         if (!grab[i].on) {
@@ -495,10 +520,11 @@ void Interaction::update(const HandInput in[2], float dt) {
             else if (b == 2) setWalk(!walk);
             triggerOnBadge[i] = false;
         }
+        if (!trig[i] && prevTrig[i] && triggerOnMenuButton[i]) { if (target[i].menuButton) toggleUi(headPose); triggerOnMenuButton[i] = false; }
         prevTrig[i] = trig[i]; prevSqueeze[i] = squeeze[i];
         // thumbstick, when not scrolling the panel: scale and turn the model about its centre (walking: teleport, snap turn)
         if (walk) walkStick(i, h);
-        else if (h.active && !target[i].panel && !target[i].badge && (std::fabs(h.stickX) > 0.2f || std::fabs(h.stickY) > 0.2f) && (!scene.empty() || plate)) {
+        else if (h.active && !onUi(i) && (std::fabs(h.stickX) > 0.2f || std::fabs(h.stickY) > 0.2f) && (!scene.empty() || plate)) {
             V3 c = apply(model, plate ? V3{} : scene.center());
             // eased: a light push zooms / turns slowly, a full one quickly
             float sy = h.stickY * std::fabs(h.stickY), sx = h.stickX * std::fabs(h.stickX);
@@ -560,8 +586,7 @@ void Interaction::render(Renderer& r, const M4& vp, V3 eye) {
         V3 c = (x == 0) ? V3{0.32f, 0.36f, 0.42f} : V3{0.22f, 0.25f, 0.29f};
         l.add({x * 0.2f, 0, -2}, {x * 0.2f, 0, 2}, c); l.add({-2, 0, x * 0.2f}, {2, 0, x * 0.2f}, c);
     }
-    ElemRef hv = onViewport ? hostHover : hover[1].valid() ? hover[1] : hover[0];
-    if (!scene.empty()) r.drawScene(scene, model, vp, eye, hv, selected, fade);
+    if (!scene.empty()) r.drawScene(scene, model, vp, eye, hoverRef(), selected, fade);
     if (plate) {
         // the build plate: a see-through disc with a grid (bolder every 5 cells) and a rim, then the axes from the origin.
         // The texture depends only on how many cells reach the rim (and the rim's highlight), so zooming reuses a few.
@@ -644,8 +669,15 @@ void Interaction::render(Renderer& r, const M4& vp, V3 eye) {
     }
     glEnable(GL_DEPTH_TEST);
     if (panel.visible && panel.tex && !panel.sheets.empty() && !uiLayers) {
-        // the UI's surfaces: drawn over the model (as windows over a 3D view), see-through where the UI draws nothing
-        glDisable(GL_DEPTH_TEST);
+        // the UI's surfaces, see-through where the UI draws nothing. They are hidden only by the model in front of them (not
+        // by the plate or the overlays): the depth buffer is reset to the model's alone, and the windows don't write to it
+        glClear(GL_DEPTH_BUFFER_BIT);
+        if (!scene.empty()) {
+            glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
+            r.drawScene(scene, model, vp, eye, ElemRef{}, {}, 1.f);
+            glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+        }
+        glEnable(GL_DEPTH_TEST); glDepthMask(GL_FALSE);
         size_t np = panel.popups.size() / 4;
         for (size_t k = 0; k < np && k < 4; ++k) { const float* p = &panel.popups[4 * k];
             r.holes.insert(r.holes.end(), {p[0] / panel.pxW, p[1] / panel.pxH, (p[0] + p[2]) / panel.pxW, (p[1] + p[3]) / panel.pxH}); }
@@ -658,7 +690,7 @@ void Interaction::render(Renderer& r, const M4& vp, V3 eye) {
         for (const Sheet& s : panel.sheets) draw(s);
         r.holes.clear();
         for (size_t k = 0; k < np; ++k) draw(panel.popupSheet(k));
-        glEnable(GL_DEPTH_TEST);
+        glDepthMask(GL_TRUE);
     } else if (panel.visible && panel.tex && panel.sheets.empty()) {
         // a dark back plate with a slim border, then the UI itself
         static GLuint plate = 0;
@@ -709,13 +741,41 @@ bool Interaction::setModel(const std::string& name, const std::vector<uint8_t>& 
     return true;
 }
 
+ElemRef Interaction::hoverRef() const { return onViewport ? hostHover : hover[1].valid() ? hover[1] : hover[0]; }
+
+void Interaction::renderOverUi(Renderer& r, const M4& vp, V3 eye) {
+    auto quads = uiQuads();
+    if (scene.empty() || quads.empty()) return;
+    // depth: "nearest" everywhere except on the windows, which get their own; the model then passes only in front of them
+    glClearDepthf(0.f); glClear(GL_DEPTH_BUFFER_BIT); glClearDepthf(1.f);
+    glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE); glDepthFunc(GL_ALWAYS);
+    for (const UiQuad& q : quads) r.drawRect(q.pose, q.w, q.h, vp);
+    glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE); glDepthFunc(GL_LEQUAL);
+    r.drawScene(scene, model, vp, eye, hoverRef(), selected, fade);
+    glClear(GL_DEPTH_BUFFER_BIT);
+}
+
 void Interaction::renderPointers(Renderer& r, const M4& vp, V3 eye) {
     Lines l; std::vector<float> dots;
+    if (last[0].active && !last[0].hand && (!scene.empty() || plate || panel.tex)) {
+        // the menu button: blue with the windows shown, outlined while they are hidden
+        bool hot = target[1].menuButton; int key = (int)uiHidden * 2 + (int)hot;
+        GLuint& tex = menuBtnTex[key];
+        if (!tex || !glIsTexture(tex)) {
+            const int S = 128; Canvas c(S, S);
+            uint8_t br = hot ? 58 : 42, bg = hot ? 125 : 111, bb = hot ? 221 : 201;
+            if (uiHidden) { c.rect(0, 0, S, S, hot ? 120 : 96, hot ? 128 : 104, hot ? 138 : 114, S / 2); c.rect(6, 6, S - 6, S - 6, 14, 17, 21, S / 2 - 6); }
+            else c.rect(0, 0, S, S, br, bg, bb, S / 2);
+            for (int k = 0; k < 3; ++k) c.rect(36, 40 + k * 20, S - 36, 40 + k * 20 + 9, 255, 255, 255, 4);   // the menu icon
+            tex = r.makeTexture(S, S, c.px.data());
+        }
+        r.drawPanel(tex, false, menuButtonPose(), kMenuBtn, kMenuBtn, kMenuBtn / 2, vp);
+    }
     auto dot = [&](V3 p, V3 c) { dots.insert(dots.end(), {p.x, p.y, p.z, c.x, c.y, c.z}); };
     bool room = passthroughAvailable && passthrough;
     for (int i = 0; i < 2; ++i) {
         const HandInput& h = last[i]; if (!h.active) continue;
-        const Target& t = target[i]; bool hit = t.panel || t.elem.valid() || t.rim;
+        const Target& t = target[i]; bool hit = t.panel || t.elem.valid() || t.rim || t.menuButton;
         if (tpHand == i && tpArc.size() > 1) {
             // the teleport arc (green where you may land, red on a wall or nowhere) and a ring where you would stand
             V3 col = tpValid ? V3{0.35f, 0.85f, 0.55f} : V3{0.95f, 0.35f, 0.32f};
@@ -728,7 +788,7 @@ void Interaction::renderPointers(Renderer& r, const M4& vp, V3 eye) {
         } else if (!h.noRay && !h.poke) {
             // a hand's ray starts a little ahead of it and is fainter: it is a pointer, the hand is what you see
             float len_ = hit ? t.t : (h.hand ? 0.8f : 1.5f); V3 f = forward(h.aim), end = h.aim.pos + f * len_;
-            V3 col = t.panel ? V3{0.92f, 0.94f, 0.97f} : t.elem.valid() ? V3{0.35f, 0.75f, 1.f} : V3{0.55f, 0.60f, 0.66f};
+            V3 col = t.panel || t.menuButton ? V3{0.92f, 0.94f, 0.97f} : t.elem.valid() ? V3{0.35f, 0.75f, 1.f} : V3{0.55f, 0.60f, 0.66f};
             if (h.hand && h.select > 0.55f) col = V3{0.40f, 0.68f, 1.f};
             l.add(h.aim.pos + f * (h.hand ? 0.06f : 0.f), end, col);
             if (hit && (!t.panel || !uiLayers)) dot(end, t.panel ? (pointerHand == i ? V3{0.26f, 0.56f, 0.87f} : V3{1, 1, 1}) : V3{0.35f, 0.75f, 1.f});

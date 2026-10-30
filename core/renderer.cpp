@@ -216,6 +216,19 @@ void Renderer::drawLines(const Lines& l, const M4& vp) {
     glDrawArrays(GL_LINES, 0, (GLsizei)(l.v.size() / 6)); glBindVertexArray(0);
 }
 
+void Renderer::drawRect(const Pose& c, float w, float h, const M4& vp) {
+    V3 x = rotate(c.rot, V3{w * 0.5f, 0, 0}), y = rotate(c.rot, V3{0, h * 0.5f, 0});
+    V3 p[4] = {c.pos - x - y, c.pos + x - y, c.pos + x + y, c.pos - x + y};
+    Lines l; l.v.reserve(36);
+    for (int i : {0, 1, 2, 0, 2, 3}) l.v.insert(l.v.end(), {p[i].x, p[i].y, p[i].z, 0, 0, 0});
+    glUseProgram(lineProg); glUniformMatrix4fv(glGetUniformLocation(lineProg, "uMvp"), 1, GL_FALSE, vp.m);
+    glUniform1f(glGetUniformLocation(lineProg, "uGamma"), gamma); glUniform1f(glGetUniformLocation(lineProg, "uRound"), 0.f);
+    glUniform1f(glGetUniformLocation(lineProg, "uSize"), 1.f);
+    glBindVertexArray(lineVao); glBindBuffer(GL_ARRAY_BUFFER, lineVbo);
+    glBufferData(GL_ARRAY_BUFFER, l.v.size() * 4, l.v.data(), GL_STREAM_DRAW);
+    glDrawArrays(GL_TRIANGLES, 0, 6); glBindVertexArray(0);
+}
+
 void Renderer::drawDots(const std::vector<float>& pts, float sizePx, const M4& vp) {
     if (pts.empty()) return;
     glUseProgram(lineProg); glUniformMatrix4fv(glGetUniformLocation(lineProg, "uMvp"), 1, GL_FALSE, vp.m);
