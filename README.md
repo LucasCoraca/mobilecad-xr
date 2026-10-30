@@ -2,24 +2,31 @@
 
 Parametric CAD in the headset, on **Meta Quest 3** (and other Android OpenXR headsets): a variation of
 [MobileCAD](https://github.com/LucasCoraca/mobilecad) that puts the **whole MobileCAD app** in front of you, with the
-part you are building in 3D in the room and the interface arranged around you. It comes with a **headset-free test bench**, so you can develop and
+part you are building in 3D in the room and its interface in a window beside it. It comes with a **headset-free test bench**, so you can develop and
 try it without a Quest.
 
-![MobileCAD XR: the feature tree on the left, the tool bars in front of you, a feature dialog on the right, the part in the middle](docs/ui-around-you.png)
+![MobileCAD XR: the window with the feature tree and the context panel (an edge picked on the model: Fillet, Chamfer), the part on its build plate](docs/one-window.png)
 
 ## Modelling in the headset
 
-MobileCAD XR is MobileCAD, with its 3D view taken out of the screen and put into the room, and its interface laid out
-around you like a desk with three monitors, with nothing behind it, so the model shows through wherever the UI draws nothing:
+MobileCAD XR is MobileCAD, with its 3D view taken out of the screen and put into the room, and its whole interface in
+**one window** to your left-front, turned towards you, clear of the model ahead: the top bar, the tool strip (or the
+sketch tools), the feature tree, the workbench tabs, and where a screen would show the 3D view, a **context panel** that
+follows what you are doing:
 
-- **left:** the feature tree, turned towards you;
-- **ahead, under the model:** the top bar, the tool strip (or the sketch tools) and the workbench tabs, tilted up towards
-  your hands like a keyboard; banners, selection chips, menus and dialogs float above it, over the model;
-- **right:** the docked panels: tool panels, feature dialogs, task panels, the sketch's constraint list, the number pad.
+- nothing selected: your recent tools;
+- something picked (on the model or in the tree): what it is, Edit / Clear, and the tools for it (an edge: Fillet,
+  Chamfer; a face: New Sketch, Pad, Pocket, Plane; a sketch: Pad, Pocket, Revolve, Groove, Edit Sketch; in an assembly:
+  joints), then hide / show and delete;
+- in a sketch: all the sketch's tools;
+- under that, every tool of the workspace with the search, so any tool is one click away;
+- a feature dialog, task panel, tool menu or prompt takes the panel while it is open.
 
-Every window can be moved on its own: grip it and put it where you like (A / X puts them all back). Menus and dialogs
-are shown whole, each on its own surface. When a text field has focus (tool search, names, text prompts, spreadsheet
-cells) a keyboard opens under the view area: point and click its keys.
+![Editing a sketch: the panel holds the sketch tools, the sketch lies on the build plate](docs/one-window-sketch.png)
+
+The **number pad** and the **keyboard** are the only other surface: they float low on your right, tilted up towards
+your hands, and show only while you type (a value, a name, a tool search, a spreadsheet cell). Grip the window or the
+keypad to put it where you like (A / X puts them back).
 
 **Passthrough** (Quest): your room shows behind the model and the windows, where they draw nothing. The scale badge's
 **PASSTHROUGH** button switches it on and off (on by default); off, you work in a dark room with a floor grid.
@@ -138,7 +145,7 @@ USB, then `adb install MobileCAD-XR-quest.apk` (or drag the APK into Meta Quest 
 Two ways, covering different parts:
 
 - **The whole app, on the Android emulator** (or a phone): without an OpenXR runtime MobileCAD XR shows a preview of
-  the XR scene: MobileCAD's full UI around you and the model in 3D. One finger is the controller with its trigger pressed
+  the XR scene: MobileCAD's UI window and the model in 3D. One finger is the controller with its trigger pressed
   (on the UI, and on the model / in the space around it: pick, sketch, place points, drag arrows); two fingers look
   around. This exercises everything except the OpenXR runtime itself
   (`./gradlew :app:assembleX86Debug`, install, run).
