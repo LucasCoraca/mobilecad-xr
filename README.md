@@ -59,10 +59,10 @@ finger on the phone you do in 3D with the trigger, with the same tools and the s
 | Grip | Move that window | Grab the model: move and turn it with your hand · on the build plate's rim: pick the table up and carry it |
 | Trigger on the build plate's rim | | Slide the table where the ray points |
 | Both grips | | Zoom (pinch: pull your hands apart / together) and turn the model between your hands |
-| Thumbstick | Scroll | Up/down scales, left/right turns (about the origin) |
+| Thumbstick | Scroll | Up/down scales, left/right turns (about the origin) · **walking**: forward aims a teleport, let go = go there, back = cancel; left/right = snap turn 30° |
 | B / Y | | The view's context menu (a two-finger tap on the phone) |
 | A / X | Put the windows back and the table in front of you | |
-| Scale badge (under the tool bars) | **TRUE SIZE**: the model at its real size, 1 mm = 1 mm · **FIT VIEW**: back to the scaled view · **PASSTHROUGH**: your room on / off | |
+| Scale badge (under the tool bars) | **TRUE SIZE**: the model at its real size, 1 mm = 1 mm · **FIT VIEW**: back to the scaled view · **WALK**: walk through the model at 1:1 (below) · **PASSTHROUGH**: your room on / off | |
 
 With passthrough off, your controllers are shown in your hands as Quest 3 Touch Plus models, their trigger, grip, stick
 and buttons moving as you use them, and your hands as a hand model. In passthrough you see your real controllers and
@@ -106,6 +106,20 @@ scaling with both hands also snaps to 1:1 as you pass it.
 
 ![The BIM example at true size, standing on the floor](docs/true-size.png)
 
+### Walk
+
+For big models (a building, a plant, a site) the badge's **WALK** button puts you inside the model at 1:1, as in VR
+games: the model's ground plane (FreeCAD's XY plane) lies on your real floor, and you move by **teleporting**. Push
+the thumbstick forward: an arc leaves the controller like a thrown ball, green where you may land, with a ring where
+you will stand; let go of the stick and you are there. It lands on the ground or on any level surface of the model, so
+you can step onto a slab, an upper floor or a flat roof and look around from there; on a wall or a steep roof it turns
+red and nothing happens (pull the stick back to cancel). One hop reaches ~10 m. Flick the stick left or right to turn
+30° where you stand. Your windows come with you (the world is moved, not you), so every tool keeps working while you
+walk: pick, measure, open a sketch on the face in front of you. **WALK** again (or **FIT VIEW**) puts the model back where
+it was.
+
+![Walking through the BIM example: the teleport arc and the ring where you will land](docs/walk.png)
+
 A typical flow: point at a face and click it, tap **Sketch → New Sketch** on the tool bar, pick Rectangle and click two
 corners on the face, close the sketch (✓), tap **Pad**, then drag its arrow out of the part (or type the length on the
 number pad). FreeCAD's example projects ship
@@ -135,7 +149,8 @@ desktop build of MobileCAD XR (`desktop/`) runs the **same XR core** as the Ques
 ```sh
 sim/run.sh          # then open http://localhost:6080/vnc.html and press Connect
 sim/run.sh --test   # automated: scripted controller picks on the model, grabs and moves it, clicks a panel button, switches true size on and off;
-                    # then the same with tracked hands (pinch, fist, a finger pressing the button) and a two-hand pinch zoom
+                    # then the same with tracked hands (pinch, fist, a finger pressing the button) and a two-hand pinch zoom;
+                    # then walk mode on the BIM example: WALK, teleport hops up to its wall, the wall refused, snap turn, WALK off
 sim/run.sh --hands  # interactive, the controllers shown as hands: trigger = pinch, grip = fist, B / Y = middle-finger pinch
 ```
 

@@ -14,6 +14,9 @@
 // the sketcher, Draft points, drag arrows) works on the model in the room; the grip moves the model,
 // B / Y opens the view's context menu. The app sends back what its view draws: preselection, overlay, the sketch.
 //   scale badge (under the panel): shows the model's scale; its button switches true size (1 mm = 1 mm) on / off
+//   walk (badge's WALK button): true size with the model's ground plane on the floor, to walk through big models
+//                (buildings) as in VR games: thumbstick forward aims a teleport arc, release = teleport there (the ground
+//                or a level surface of the model: a floor, a slab, a roof), pull back = cancel; left / right = snap turn
 //   hands (no controllers): see hands.h; pinch = trigger, fist = grip, an index finger touches the windows directly
 //   build plate: a tabletop on the model's ground plane (FreeCAD's XY plane) around its origin, with a grid and the axes;
 //                the model stands on it. Its rim is a handle: grip on the rim picks the table up and carries it (it
@@ -93,14 +96,25 @@ public:
      *  outside this mode snaps to 1:1 on the way through). Toggled by the scale badge under the panel. */
     bool trueScale = false;
     void setTrueScale(bool on);
+    /** Walk mode (see the top): you move by teleporting, the world is moved under you (the UI stays with you). Off puts
+     *  the model back where it was. */
+    bool walk = false;
+    void setWalk(bool on);
+    /** Teleports the viewer to `world` (a point on a floor): the model is moved so that point is under their feet. */
+    void teleportTo(V3 world);
     float floorY = 0;            // world height of the floor (0 in stage space)
     /** Passthrough (the headset's cameras: your room behind the model and the UI). `passthroughAvailable` is set by the
      *  session; the badge's PASSTHROUGH button switches `passthrough`. */
     bool passthroughAvailable = false, passthrough = true;
     /** "1:1", "1:4.2", "3:1": world size : real size. */
     std::string scaleText() const;
-    /** Centre of the scale badge's TRUE SIZE / FIT VIEW button (world), for scripted tests. */
-    V3 badgeButton() const;
+    /** Centre of a scale badge button (world), for scripted tests: 0 TRUE SIZE / FIT VIEW, 2 WALK. */
+    V3 badgeButton(int which = 0) const;
+    /** The teleport arc's landing point while aiming (world), and whether one may stand there; for scripted tests. */
+    bool teleportTarget(V3* p) const { if (tpHand < 0 || tpArc.empty()) return false; *p = tpPoint; return tpValid; }
+    bool tpHandAiming() const { return tpHand >= 0 && !tpArc.empty(); }
+    V3 tpArcEnd() const { return tpArc.empty() ? V3{} : tpArc.back(); }
+    Pose walkReturnPose() const { return walkReturn; }
     // ---- the app's 3D view (see the top)
     std::function<void(int action, V3 o, V3 d, float depthMm)> onViewport;   // 0 press 1 drag 2 release 3 hover 4 leave 5 cancel; model mm
     std::function<void()> onContextMenu;
@@ -170,7 +184,15 @@ private:
     Pose fitPose; bool fitSaved = false;
     bool placedEmpty = false; Pose placeHead;  // placed before the document had a shape: size it again when it gets one      // the pose to return to when true size is switched off
     V3 viewer{0, 1.6f, 0};
-    bool triggerOnBadge[2] = {false, false}; int badgeHot = -1;    // the badge button pointed at (0 true size, 1 passthrough)
+    bool triggerOnBadge[2] = {false, false}; int badgeHot = -1;    // the badge button pointed at (0 true size, 1 passthrough, 2 walk)
+    // walk mode: the teleport arc of the hand aiming (`tpHand`), where it lands and whether one may stand there
+    bool aiming[2] = {false, false}, snapReady[2] = {true, true}; int tpHand = -1;
+    std::vector<V3> tpArc; bool tpValid = false; V3 tpPoint;
+    Pose walkReturn; bool walkTrue = false;                        // the view to go back to
+    void walkStick(int i, const HandInput& h);
+    void teleportArc(const Pose& aim);
+    float groundY() const;                                         // world height of the model's ground plane (its XY plane)
+    void level();                                                  // the model upright (its Z up), turned only about the vertical
     int badgeButtonAt(float u) const;
     int viewHand = -1; bool viewHover = false; bool prevStick[2] = {false, false};
     std::map<std::string, std::pair<GLuint, std::pair<int, int>>> labelTex;

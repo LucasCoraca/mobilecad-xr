@@ -16,12 +16,13 @@ struct Mesh {
     float alpha = 1;            // < 1: drawn see-through (transparent objects, a failed feature's last good shape)
     std::vector<int> faceFirst, faceCount;         // per FreeCAD face id (1-based): its vertex range in tris
     std::vector<int> edgeFirst, edgeCount;         // per FreeCAD edge id (1-based): its segment range in edges
+    V3 lo{1e30f, 1e30f, 1e30f}, hi{-1e30f, -1e30f, -1e30f};   // bounds of its triangles (picking skips meshes a ray misses)
     unsigned vao = 0, vbo = 0, evao = 0, evbo = 0;   // GL objects, made by the renderer
     size_t triVerts() const { return tris.size() / 7; }
     size_t edgeSegments() const { return edges.size() / 7; }
 };
 
-struct Hit { int mesh = -1; int face = 0; float t = 0; V3 point; };
+struct Hit { int mesh = -1; int face = 0; float t = 0; V3 point, normal; };   // normal: of the triangle hit (unit, either side)
 /** A picked element: FreeCAD Face<id> ('F') or Edge<id> ('E') of mesh `mesh`. */
 struct ElemRef {
     int mesh = -1; char kind = 0; int id = 0;
@@ -41,8 +42,8 @@ struct Scene {
     bool empty() const { return meshes.empty(); }
     V3 center() const { return (min + max) * 0.5f; }
     float radius() const { return len(max - min) * 0.5f; }
-    /** Nearest face hit by a ray given in model coordinates. */
-    Hit pick(V3 origin, V3 dir) const;
+    /** Nearest face hit by a ray given in model coordinates (`dir` unit), before `maxT` (a segment). */
+    Hit pick(V3 origin, V3 dir, float maxT = 1e30f) const;
     /** Nearest edge passing within `tanTol` * distance of the ray (an angular tolerance), and before `maxT`. */
     Hit pickEdge(V3 origin, V3 dir, float tanTol, float maxT) const;
     int find(const std::string& name) const { for (size_t i = 0; i < meshes.size(); ++i) if (meshes[i].name == name) return (int)i; return -1; }

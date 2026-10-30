@@ -5,6 +5,7 @@
 //
 //   mobilecad-xr-desktop [--autotest] [--true-size] [--sheets] [--screenshot out.ppm --frames N] scene.mcxr|dir ...
 //   --sheets: the stand-in panel cut into two surfaces, shown as compositor layers as on the Quest (to test that path)
+//   --autotest --walk: walk mode instead: WALK on the badge, teleport, a wall refused, snap turn, WALK off
 #include <dirent.h>
 #include <algorithm>
 #include <chrono>
@@ -37,7 +38,7 @@ static void writePpm(const char* path, GLuint tex, int w, int h) {
 
 
 int main(int argc, char** argv) {
-    std::vector<std::string> files; const char* shot = nullptr; int shotFrames = 120; bool autotest = false, startTrue = false, sheets = false, hands = false, demo = false;
+    std::vector<std::string> files; const char* shot = nullptr; int shotFrames = 120; bool autotest = false, startTrue = false, sheets = false, hands = false, demo = false, walkTest = false;
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
         if (a == "--screenshot" && i + 1 < argc) shot = argv[++i];
@@ -46,6 +47,7 @@ int main(int argc, char** argv) {
         else if (a == "--sheets") sheets = true;
         else if (a == "--hands") hands = true;
         else if (a == "--demo") demo = true;
+        else if (a == "--walk") walkTest = true;
         else if (a == "--true-size") startTrue = true;
         else if (DIR* d = opendir(a.c_str())) {
             while (dirent* e = readdir(d)) { std::string n = e->d_name; if (n.size() > 5 && n.substr(n.size() - 5) == ".mcxr") files.push_back(a + "/" + n); }
@@ -246,6 +248,83 @@ int main(int argc, char** argv) {
         hs.inputOverride = [&, script](HandInput h[2], const Pose& head, double t) {
             scripted = 0; script(h, head, t);
             if (scripted == 1) toHand(h[1], head, false, h[1].aim.pos - shoulderPoint(head, false));
+        };
+    }
+    // --autotest --walk: walk mode with a scripted right controller, checked on the model's pose
+    //   1) click WALK: 1:1, ground plane on the floor  2) hop towards the model (stick forward, let go) until its wall is
+    //   near: each time the arc's landing point is then under your feet  3) aim at the wall: refused, pulled back = nothing
+    //   moves  4) flick right: 30° snap turn  5) click WALK again: the view from before
+    Pose before{}, aimModel{}; V3 aimPoint{}; bool wAim = false, wWall = false, hopOk = true; float yaw0 = 0, wallDist = 0; int phase = 0, pf = 0, hops = 0;
+    if (autotest && walkTest) {
+        steps = {{"walk: WALK button, 1:1, ground on the floor"}, {"walk: teleport to where the arc lands"}, {"walk: arc on a wall is refused"},
+                 {"walk: snap turn 30 degrees"}, {"walk: WALK again restores the view"}};
+        auto yaw = [](const Pose& m) { V3 x = rotate(m.rot, V3{1, 0, 0}); return std::atan2(-x.z, x.x); };
+        // each phase counts its frames (pf): an input held for some frames, then checked a few frames after it was let go
+        hs.inputOverride = [&, yaw](HandInput h[2], const Pose& head, double t) {
+            if (ia.scene.empty() || t < 1.0 || autoDone) return;
+            HandInput& r = h[1]; r = {}; r.active = true; h[0] = {};
+            V3 from = head.pos + V3{0.15f, -0.25f, 0}, f = rotate(head.rot, V3{0, 0, -1}); f.y = 0; f = norm(f);
+            auto aim = [&](V3 dir) { r.aim = {from, lookRot(dir), 1}; r.grip = r.aim; };
+            auto next = [&]() { ++phase; pf = 0; };
+            V3 feet{head.pos.x, ia.floorY, head.pos.z};
+            ++pf;
+            if (phase == 0) {                                          // 1) the WALK button
+                aim(ia.badgeButton(2) - from);
+                if (pf == 5) { before = ia.model; r.select = 1; }
+                if (pf == 10) {
+                    steps[0].ok = ia.walk && ia.scaleText() == "1:1" && std::fabs(apply(ia.model, V3{}).y - ia.floorY) < 1e-3f;
+                    std::fprintf(stderr, "mcxr autotest: walk %d, scale %s, ground at %.3f m (floor %.3f)\n", ia.walk, ia.scaleText().c_str(), apply(ia.model, V3{}).y, ia.floorY);
+                    next();
+                }
+            } else if (phase == 1) {                                   // 2) teleport towards the model until its wall is near
+                V3 c = apply(ia.model, ia.scene.center()), dir = norm(V3{c.x - feet.x, 0, c.z - feet.z});
+                if (pf == 1) {                                         // how far the wall is, at chest height
+                    Pose inv = inverse(ia.model); V3 a = apply(inv, feet + V3{0, 1.2f, 0}), b = apply(inv, feet + V3{0, 1.2f, 0} + dir);
+                    Hit wh = ia.scene.pick(a, norm(b - a)); wallDist = wh.mesh >= 0 ? wh.t * ia.model.scale : 1e9f;
+                    if (wallDist < 5.f || hops >= 8) { phase = 2; pf = 0; std::fprintf(stderr, "mcxr autotest: wall %.2f m ahead after %d hops\n", wallDist, hops); return; }
+                }
+                aim(dir + V3{0, 0.45f, 0});                            // up ~25 degrees: a long hop
+                if (pf <= 6) { r.stickY = 1; V3 p; if (pf > 2 && ia.teleportTarget(&p)) { aimPoint = p; aimModel = ia.model; wAim = true; } else if (pf > 2) wAim = false; }
+                if (pf == 6 && hops == 1 && std::getenv("MCXR_WALK_SHOT")) { autoDone = true; return; }   // a picture of the arc
+                if (pf == 12) {
+                    Pose inv = inverse(ia.model), inv0 = inverse(aimModel);
+                    float d = len(apply(inv, feet) - apply(inv0, aimPoint));
+                    hopOk = hopOk && wAim && d < 5.f; ++hops;              // the landing point (model mm) is under the feet now
+                    std::fprintf(stderr, "mcxr autotest: hop %d: %.2f m, the landing point now %.1f mm from the feet\n", hops,
+                                 len(V3{aimPoint.x - feet.x, 0, aimPoint.z - feet.z}), d);
+                    steps[1].ok = hopOk; pf = 0;
+                }
+            } else if (phase == 2) {                                   // 3) at the wall, nearly level: refused, then pulled back
+                V3 c = apply(ia.model, ia.scene.center()); aim(norm(V3{c.x - from.x, 0, c.z - from.z}) + V3{0, 0.05f, 0});
+                if (pf <= 6) { r.stickY = 1; if (pf > 2) { V3 p; bool ok = ia.teleportTarget(&p); wWall = !ok && ia.tpHandAiming(); aimPoint = ia.tpArcEnd(); before = ia.model; } }
+                if (pf == 7) r.stickY = -1;                            // pulled back: cancelled
+                if (pf == 12) {
+                    steps[2].ok = wWall && len(ia.model.pos - before.pos) < 1e-6f;
+                    std::fprintf(stderr, "mcxr autotest: wall arc refused %d (ends %.2f m away, %.2f m up)\n", (int)wWall,
+                                 len(V3{aimPoint.x - feet.x, 0, aimPoint.z - feet.z}), aimPoint.y - ia.floorY);
+                    yaw0 = yaw(ia.model); next();
+                }
+            } else if (phase == 3) {                                   // 4) flick right
+                aim(f + V3{0, -0.3f, 0});
+                if (pf <= 3) r.stickX = 1;
+                if (pf == 8) {
+                    float dy = std::remainder(yaw(ia.model) - yaw0, 6.2831853f) * 57.29578f;
+                    steps[3].ok = std::fabs(std::fabs(dy) - 30.f) < 0.5f;
+                    std::fprintf(stderr, "mcxr autotest: snap turn %.1f degrees\n", dy);
+                    next();
+                }
+            } else {                                                   // 5) WALK off
+                aim(ia.badgeButton(2) - from);
+                if (pf == 5) { before = ia.walkReturnPose(); r.select = 1; }
+                if (pf == 10) {
+                    steps[4].ok = !ia.walk && len(ia.model.pos - before.pos) < 1e-5f && ia.model.scale == before.scale;
+                    std::fprintf(stderr, "mcxr autotest: walk off, scale %s\n", ia.scaleText().c_str());
+                    autoDone = true; bool all = true;
+                    for (auto& s : steps) { std::fprintf(stderr, "mcxr autotest: %-44s %s\n", s.what, s.ok ? "PASS" : "FAIL"); all &= s.ok; }
+                    std::fprintf(stderr, "mcxr autotest: %s\n", all ? "PASS" : "FAIL");
+                }
+            }
+            (void)t;
         };
     }
     // --demo: both hands held still in front of you (for a look at the controllers / hands), the right one pinching

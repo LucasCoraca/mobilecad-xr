@@ -25,6 +25,8 @@ bool Scene::addTessellation(const std::string& name, const uint8_t* data, size_t
                 (&min.x)[k] = std::min((&min.x)[k], v); (&max.x)[k] = std::max((&max.x)[k], v);
                 if (arr == &m.edges) { float w = (*arr)[i + 3 + k]; if (std::isfinite(w)) { (&min.x)[k] = std::min((&min.x)[k], w); (&max.x)[k] = std::max((&max.x)[k], w); } }
             }
+    for (size_t i = 0; i + 6 < m.tris.size(); i += 7)
+        for (int k = 0; k < 3; ++k) { float v = m.tris[i + k]; if (std::isfinite(v)) { (&m.lo.x)[k] = std::min((&m.lo.x)[k], v); (&m.hi.x)[k] = std::max((&m.hi.x)[k], v); } }
     for (size_t v = 0; v < m.triVerts(); ++v) {                      // vertices come grouped by face
         int id = (int)m.tris[v * 7 + 6]; if (id < 0 || id > 1000000) continue;
         if ((int)m.faceFirst.size() <= id) { m.faceFirst.resize(id + 1, -1); m.faceCount.resize(id + 1, 0); }
@@ -41,9 +43,22 @@ bool Scene::addTessellation(const std::string& name, const uint8_t* data, size_t
     return true;
 }
 
-Hit Scene::pick(V3 o, V3 d) const {
-    Hit best; best.t = 1e30f;
+/** The ray o + t d meets the box within [0, maxT] (slab test). */
+static bool boxRay(V3 lo, V3 hi, V3 o, V3 d, float maxT) {
+    float t0 = 0, t1 = maxT;
+    for (int k = 0; k < 3; ++k) {
+        float ok = (&o.x)[k], dk = (&d.x)[k], a = (&lo.x)[k], b = (&hi.x)[k];
+        if (std::fabs(dk) < 1e-12f) { if (ok < a || ok > b) return false; continue; }
+        float u = (a - ok) / dk, v = (b - ok) / dk; if (u > v) std::swap(u, v);
+        t0 = std::max(t0, u); t1 = std::min(t1, v); if (t0 > t1) return false;
+    }
+    return true;
+}
+
+Hit Scene::pick(V3 o, V3 d, float maxT) const {
+    Hit best; best.t = maxT;
     for (size_t mi = 0; mi < meshes.size(); ++mi) {
+        if (!boxRay(meshes[mi].lo, meshes[mi].hi, o, d, best.t)) continue;
         const auto& t = meshes[mi].tris;
         for (size_t i = 0; i + 20 < t.size(); i += 21) {               // Möller–Trumbore
             V3 a{t[i], t[i + 1], t[i + 2]}, b{t[i + 7], t[i + 8], t[i + 9]}, c{t[i + 14], t[i + 15], t[i + 16]};
@@ -52,7 +67,7 @@ Hit Scene::pick(V3 o, V3 d) const {
             float f = 1.f / det; V3 s = o - a; float u = f * dot(s, h); if (u < 0 || u > 1) continue;
             V3 q = cross(s, e1); float v = f * dot(d, q); if (v < 0 || u + v > 1) continue;
             float tt = f * dot(e2, q);
-            if (tt > 1e-6f && tt < best.t) { best.t = tt; best.mesh = (int)mi; best.face = (int)t[i + 6]; best.point = o + d * tt; }
+            if (tt > 1e-6f && tt < best.t) { best.t = tt; best.mesh = (int)mi; best.face = (int)t[i + 6]; best.point = o + d * tt; best.normal = norm(cross(e1, e2)); }
         }
     }
     if (best.mesh < 0) best.t = 0;

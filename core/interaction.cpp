@@ -8,8 +8,9 @@ namespace mcxr {
 static V3 forward(const Pose& p) { return rotate(p.rot, V3{0, 0, -1}); }
 static Pose unscaled(const Pose& p) { return Pose{p.pos, p.rot, 1}; }
 static const float kTrueScale = 0.001f;              // scene mm -> world m
-static const float kBadgeW = 0.58f, kBadgeH = 0.06f; static const int kBadgePx = 2000;   // badge size (m), pixels per metre
-static const int kSizeBtnW = 280, kRoomBtnW = 316;                                // its buttons (px), from the right: size, room
+static const float kBadgeW = 0.70f, kBadgeH = 0.06f; static const int kBadgePx = 2000;   // badge size (m), pixels per metre
+static const int kSizeBtnW = 280, kRoomBtnW = 316, kWalkBtnW = 200;               // its buttons (px), from the right: size, room, walk
+static const float kTpSpeed = 10.f, kSnapTurn = 0.5235988f;                       // teleport arc launch speed (m/s), snap turn (30°)
 static Q facing(V3 from, V3 to) {                      // yaw-only rotation whose +Z points from `to` back to `from`
     V3 d = from - to; d.y = 0; if (len(d) < 1e-4f) d = {0, 0, 1};
     d = norm(d); return axisAngle({0, 1, 0}, std::atan2(d.x, d.z));
@@ -48,7 +49,7 @@ void Interaction::placeModel(const Pose& head) {
     placedEmpty = scene.empty(); placeHead = head; placed = true;
     hover[0] = hover[1] = {};
     if (!hostSelection) selected.clear();
-    trueScale = false; fitSaved = false;
+    trueScale = false; fitSaved = false; walk = false; aiming[0] = aiming[1] = false; tpHand = -1; tpArc.clear();
 }
 
 void Interaction::fitScale() {
@@ -124,6 +125,76 @@ void Interaction::setTrueScale(bool on) {
     }
 }
 
+float Interaction::groundY() const { return apply(model, V3{}).y; }
+
+void Interaction::level() {
+    V3 x = rotate(model.rot, {1, 0, 0}); x.y = 0;
+    float yaw = len(x) > 1e-3f ? std::atan2(-x.z, x.x) : 0.f;
+    V3 c = scene.empty() ? V3{} : scene.center(), pivot = apply(model, c);
+    model.rot = qnorm(axisAngle({0, 1, 0}, yaw) * axisAngle({1, 0, 0}, -1.5707963f));
+    model.pos = pivot - rotate(model.rot, c * model.scale);
+}
+
+void Interaction::setWalk(bool on) {
+    if (on == walk || (on && scene.empty())) return;
+    aiming[0] = aiming[1] = false; tpHand = -1; tpArc.clear();
+    if (!on) { walk = false; model = walkReturn; trueScale = walkTrue; if (!walkTrue) fitSaved = false; return; }
+    walkReturn = model; walkTrue = trueScale; walk = true;
+    if (!trueScale) setTrueScale(true);
+    level();
+    model.pos.y += floorY - groundY();                                 // its ground on the floor you stand on
+}
+
+void Interaction::teleportTo(V3 p) {
+    V3 feet{headPose.pos.x, floorY, headPose.pos.z};                  // (the head, between the eyes)
+    model.pos = model.pos + (feet - p);
+}
+
+void Interaction::teleportArc(const Pose& aim) {
+    // a thrown ball's path from the controller: it lands on the ground plane, or on the first surface of the model it meets;
+    // one may stand where the surface is level (a floor, a slab, a roof), not on a wall
+    tpArc.clear(); tpValid = false;
+    V3 p = aim.pos, v = forward(aim) * kTpSpeed; const V3 g{0, -9.81f, 0}; const float dt = 0.025f;
+    float gy = groundY(); Pose inv = inverse(model);
+    tpArc.push_back(p);
+    for (int step = 0; step < 160; ++step) {
+        V3 q = p + v * dt + g * (0.5f * dt * dt); v = v + g * dt;
+        V3 a = apply(inv, p), b = apply(inv, q), d = b - a; float L = len(d);
+        if (L > 1e-6f) {
+            Hit h = scene.pick(a, d * (1.f / L), L);
+            if (h.mesh >= 0) {
+                V3 w = apply(model, h.point), n = norm(rotate(model.rot, h.normal));
+                if (dot(n, q - p) > 0) n = n * -1.f;                       // the side the arc comes from
+                tpArc.push_back(w); tpPoint = w; tpValid = n.y > 0.8f; return;
+            }
+        }
+        if (p.y > gy && q.y <= gy) {
+            V3 w = p + (q - p) * ((p.y - gy) / (p.y - q.y));
+            tpArc.push_back(w); tpPoint = w; tpValid = true; return;
+        }
+        tpArc.push_back(q); p = q;
+    }
+}
+
+void Interaction::walkStick(int i, const HandInput& h) {
+    bool free = h.active && !target[i].panel && !target[i].badge;
+    if (aiming[i]) {
+        if (!h.active || h.stickY < -0.6f) { aiming[i] = false; tpHand = -1; tpArc.clear(); }       // pulled back: cancel
+        else if (std::fabs(h.stickY) < 0.3f && std::fabs(h.stickX) < 0.5f) {                        // let go: go there
+            teleportArc(h.aim); if (tpValid) teleportTo(tpPoint);
+            aiming[i] = false; tpHand = -1; tpArc.clear();
+        } else teleportArc(h.aim);
+    } else if (free && tpHand < 0 && h.stickY > 0.7f) { aiming[i] = true; tpHand = i; teleportArc(h.aim); }
+    else if (free && snapReady[i] && std::fabs(h.stickX) > 0.7f && std::fabs(h.stickY) < 0.5f) {
+        // snap turn about where you stand: stick right turns you right (the world the other way)
+        Q turn = axisAngle({0, 1, 0}, h.stickX > 0 ? kSnapTurn : -kSnapTurn);
+        V3 c{headPose.pos.x, 0, headPose.pos.z};
+        model.rot = qnorm(turn * model.rot); model.pos = c + rotate(turn, model.pos - c);
+        snapReady[i] = false;
+    }
+    if (std::fabs(h.stickX) < 0.3f) snapReady[i] = true;
+}
+
 std::string Interaction::scaleText() const {
     float k = model.scale / kTrueScale; char b[32];
     if (std::fabs(k - 1) < 0.005f) return "1:1";
@@ -140,12 +211,18 @@ Pose Interaction::badgePose() const {                                  // hangs 
     return p;
 }
 
-V3 Interaction::badgeButton() const { return apply(badgePose(), V3{kBadgeW / 2 - (16 + kSizeBtnW / 2.f) / kBadgePx, 0, 0}); }
+V3 Interaction::badgeButton(int which) const {
+    float x = 16 + kSizeBtnW / 2.f;                                    // px from the badge's right edge
+    if (which == 2) x = 32 + kSizeBtnW + (passthroughAvailable ? 16 + kRoomBtnW : 0) + kWalkBtnW / 2.f;
+    return apply(badgePose(), V3{kBadgeW / 2 - x / kBadgePx, 0, 0});
+}
 
 int Interaction::badgeButtonAt(float u) const {
     float x = u * kBadgeW * kBadgePx, W = kBadgeW * kBadgePx;
     if (x >= W - 16 - kSizeBtnW && x <= W - 16) return 0;
     if (passthroughAvailable && x >= W - 32 - kSizeBtnW - kRoomBtnW && x <= W - 32 - kSizeBtnW) return 1;
+    float w0 = W - 32 - kSizeBtnW - (passthroughAvailable ? 16 + kRoomBtnW : 0);   // walk: left of the others
+    if (!scene.empty() && x >= w0 - kWalkBtnW && x <= w0) return 2;
     return -1;
 }
 
@@ -413,12 +490,15 @@ void Interaction::update(const HandInput in[2], float dt) {
         }
         if (!trig[i] && prevTrig[i] && triggerOnBadge[i]) {
             int b = target[i].badge ? badgeButtonAt(target[i].px) : -1;
-            if (b == 0) setTrueScale(!trueScale); else if (b == 1) passthrough = !passthrough;
+            if (b == 0) { if (walk) { setWalk(false); if (trueScale) setTrueScale(false); } else setTrueScale(!trueScale); }   // FIT VIEW leaves walking too
+            else if (b == 1) passthrough = !passthrough;
+            else if (b == 2) setWalk(!walk);
             triggerOnBadge[i] = false;
         }
         prevTrig[i] = trig[i]; prevSqueeze[i] = squeeze[i];
-        // thumbstick, when not scrolling the panel: scale and turn the model about its centre
-        if (h.active && !target[i].panel && !target[i].badge && (std::fabs(h.stickX) > 0.2f || std::fabs(h.stickY) > 0.2f) && (!scene.empty() || plate)) {
+        // thumbstick, when not scrolling the panel: scale and turn the model about its centre (walking: teleport, snap turn)
+        if (walk) walkStick(i, h);
+        else if (h.active && !target[i].panel && !target[i].badge && (std::fabs(h.stickX) > 0.2f || std::fabs(h.stickY) > 0.2f) && (!scene.empty() || plate)) {
             V3 c = apply(model, plate ? V3{} : scene.center());
             // eased: a light push zooms / turns slowly, a full one quickly
             float sy = h.stickY * std::fabs(h.stickY), sx = h.stickX * std::fabs(h.stickX);
@@ -588,9 +668,9 @@ void Interaction::render(Renderer& r, const M4& vp, V3 eye) {
         r.drawPanel(panel.tex, panel.external, panel.pose, panel.width, panel.height, 0.022f, vp);
     }
     if (panel.visible && (!scene.empty() || plate)) {
-        // the scale badge: "SCALE 1:4.2   [PASSTHROUGH] [TRUE SIZE]", or "SCALE 1:1 TRUE SIZE   [PASSTHROUGH] [FIT VIEW]"
+        // the scale badge: "SCALE 1:4.2   [WALK] [PASSTHROUGH] [TRUE SIZE]", or "SCALE 1:1 TRUE SIZE   [WALK] [PASSTHROUGH] [FIT VIEW]"
         std::string ratio = scaleText(), button = trueScale ? "FIT VIEW" : "TRUE SIZE";
-        std::string key = ratio + "|" + button + "|" + std::to_string(badgeHot) + (passthroughAvailable ? passthrough ? "R" : "r" : "");
+        std::string key = ratio + "|" + button + "|" + std::to_string(badgeHot) + (passthroughAvailable ? passthrough ? "R" : "r" : "") + (walk ? "W" : scene.empty() ? "-" : "w");
         if (key != badgeDrawn || !badgeTex || !glIsTexture(badgeTex)) {
             int W = (int)(kBadgeW * kBadgePx), H = (int)(kBadgeH * kBadgePx);
             Canvas c(W, H); c.rect(0, 0, W, H, 14, 17, 21);
@@ -606,6 +686,8 @@ void Interaction::render(Renderer& r, const M4& vp, V3 eye) {
             };
             pill(W - 16 - kSizeBtnW, kSizeBtnW, button, true, badgeHot == 0);
             if (passthroughAvailable) pill(W - 32 - kSizeBtnW - kRoomBtnW, kRoomBtnW, "PASSTHROUGH", passthrough, badgeHot == 1);
+            int w0 = W - 32 - kSizeBtnW - (passthroughAvailable ? 16 + kRoomBtnW : 0);
+            if (!scene.empty()) pill(w0 - kWalkBtnW, kWalkBtnW, "WALK", walk, badgeHot == 2);
             badgeTex = r.makeTexture(W, H, c.px.data(), glIsTexture(badgeTex) ? badgeTex : 0); badgeDrawn = key;
         }
         r.drawPanel(badgeTex, false, badgePose(), kBadgeW, kBadgeH, kBadgeH / 2, vp);
@@ -634,7 +716,16 @@ void Interaction::renderPointers(Renderer& r, const M4& vp, V3 eye) {
     for (int i = 0; i < 2; ++i) {
         const HandInput& h = last[i]; if (!h.active) continue;
         const Target& t = target[i]; bool hit = t.panel || t.elem.valid() || t.rim;
-        if (!h.noRay && !h.poke) {
+        if (tpHand == i && tpArc.size() > 1) {
+            // the teleport arc (green where you may land, red on a wall or nowhere) and a ring where you would stand
+            V3 col = tpValid ? V3{0.35f, 0.85f, 0.55f} : V3{0.95f, 0.35f, 0.32f};
+            for (size_t k = 0; k + 1 < tpArc.size(); k += 1) if (k % 2 == 0 || k + 2 >= tpArc.size()) l.add(tpArc[k], tpArc[k + 1], col);   // dashed
+            if (tpValid) for (int k = 0; k < 32; ++k) {
+                float a0 = k * 6.2831853f / 32, a1 = (k + 1) * 6.2831853f / 32;
+                for (float rr : {0.28f, 0.30f}) l.add(tpPoint + V3{rr * std::cos(a0), 0.01f, rr * std::sin(a0)}, tpPoint + V3{rr * std::cos(a1), 0.01f, rr * std::sin(a1)}, col);
+            }
+            dot(tpArc.back(), col);
+        } else if (!h.noRay && !h.poke) {
             // a hand's ray starts a little ahead of it and is fainter: it is a pointer, the hand is what you see
             float len_ = hit ? t.t : (h.hand ? 0.8f : 1.5f); V3 f = forward(h.aim), end = h.aim.pos + f * len_;
             V3 col = t.panel ? V3{0.92f, 0.94f, 0.97f} : t.elem.valid() ? V3{0.35f, 0.75f, 1.f} : V3{0.55f, 0.60f, 0.66f};
