@@ -16,7 +16,7 @@ android {
         minSdk = 32                      // Meta Horizon OS store guidance: min 32, target 34
         targetSdk = 34
         versionCode = ((System.currentTimeMillis() / 60000L) - 29454720L).toInt()
-        versionName = "0.9.5"
+        versionName = "0.9.6"
         externalNativeBuild { cmake { arguments += listOf("-DANDROID_STL=c++_shared", "-DMOBILECAD_DIR=" + mobilecad.absolutePath) } }
     }
     ndkVersion = "29.0.14206865"
