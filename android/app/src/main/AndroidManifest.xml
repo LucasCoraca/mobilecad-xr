@@ -4,6 +4,10 @@
     <!-- Khronos OpenXR loader: lets the app find the headset's runtime -->
     <uses-permission android:name="org.khronos.openxr.permission.OPENXR" />
     <uses-permission android:name="org.khronos.openxr.permission.OPENXR_SYSTEM" />
+    <!-- as MobileCAD: online features of FreeCAD's code, and updates from the GitHub releases (Updater.kt) -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <queries>
         <provider android:authorities="org.khronos.openxr.runtime_broker;org.khronos.openxr.system_runtime_broker" />
         <intent><action android:name="org.khronos.openxr.OpenXRRuntimeService" /></intent>
@@ -30,5 +34,6 @@
                 <category android:name="org.khronos.openxr.intent.category.IMMERSIVE_HMD" />
             </intent-filter>
         </activity>
+        <receiver android:name="app.mobilecad.freecad.UpdateReceiver" android:exported="false" />
     </application>
 </manifest>
