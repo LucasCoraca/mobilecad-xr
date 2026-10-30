@@ -80,6 +80,7 @@ class XrActivity : ComponentActivity() {
     private external fun nativePreviewInit()
     private external fun nativePreviewTouch(action: Int, x: Float, y: Float)
     private external fun nativePreviewDraw(w: Int, h: Int)
+    private external fun nativePreviewLook(yaw: Float, pitch: Float, fov: Float)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -101,6 +102,10 @@ class XrActivity : ComponentActivity() {
         syncScene()
     }
 
+    override fun onNewIntent(intent: android.content.Intent) {
+        super.onNewIntent(intent)
+        intent.getStringExtra("preview_look")?.split(",")?.mapNotNull { it.trim().toFloatOrNull() }?.takeIf { it.size == 3 }?.let { nativePreviewLook(it[0], it[1], it[2]) }
+    }
     override fun onStop() { super.onStop(); app.autosave() }
     /** Back from another activity (a file picker): draw the interface afresh, so the headset gets its image (and where
      *  it can be clicked) again even when nothing in it changes. */
@@ -247,12 +252,12 @@ class XrActivity : ComponentActivity() {
 
     // ---------------------------------------------------------------- the UI panel: MobileCAD on a virtual display
     /** MobileCAD lays its interface out for XR (XrLayout): the virtual display's size and the parts the headset shows as
-     *  separate surfaces around the user - feature list, view area, bars, docked panels. Rendered at 2.25 px per dp
-     *  (360 dpi) and shown mipmapped: denser than the headset's pixels, so text stays crisp. */
+     *  separate surfaces - the window with the whole interface and the keypad (number pad / keyboard). Rendered at 2.25 px
+     *  per dp (360 dpi) and shown mipmapped: denser than the headset's pixels, so text stays crisp. */
     private fun layoutPanel() {
-        val k = PX_PER_DP; val t = XrLayout.TREE * k; val st = XrLayout.STAGE * k; val sd = XrLayout.SIDE * k
-        val h = XrLayout.HEIGHT * k; val b = XrLayout.BARS * k
-        nativeSetLayout((t + st + sd).toInt(), h.toInt(), k, floatArrayOf(0f, 0f, t, h,  t, b, st, h - b,  t, 0f, st, b,  t + st, 0f, sd, h))
+        val k = PX_PER_DP; val w = XrLayout.WIDTH * k; val h = XrLayout.HEIGHT * k
+        nativeSetLayout(((XrLayout.WIDTH + XrLayout.PAD_W) * k).toInt(), h.toInt(), k,
+            floatArrayOf(0f, 0f, w, h,  w, 0f, XrLayout.PAD_W * k, XrLayout.PAD_H * k))
     }
 
     /** Called on the GL thread with the panel's texture: MobileCAD's UI is rendered into it through a virtual display. */
@@ -298,7 +303,7 @@ class XrActivity : ComponentActivity() {
     private val keyboard = XrKeyboard()
     private var keyboardWindow: android.widget.PopupWindow? = null
     private var watching = false
-    /** While a text field on the panel has focus, the keyboard is shown under the view area (a window that never takes the
+    /** While a text field on the panel has focus, the keyboard is shown on the keypad's surface (a window that never takes the
      *  focus, so the field keeps it). */
     private fun watchTextFields() {
         if (watching) return; watching = true
@@ -328,8 +333,8 @@ class XrActivity : ComponentActivity() {
             setContent { MaterialTheme { keyboard.Content(androidx.compose.ui.Modifier.fillMaxSize()) } }
         }, (kw * k).toInt(), (kh * k).toInt(), false).apply { isTouchable = true; isOutsideTouchable = false; inputMethodMode = android.widget.PopupWindow.INPUT_METHOD_NOT_NEEDED }
         keyboardWindow = win
-        // centred at the bottom of the view area, in front of the model
-        win.showAtLocation(decor, android.view.Gravity.NO_GRAVITY, ((XrLayout.TREE + (XrLayout.STAGE - kw) / 2f) * k).toInt(), ((XrLayout.HEIGHT - kh - 10) * k).toInt())
+        // on the keypad's surface, where the number pad shows too
+        win.showAtLocation(decor, android.view.Gravity.NO_GRAVITY, ((XrLayout.WIDTH + (XrLayout.PAD_W - kw) / 2f) * k).toInt(), (10 * k).toInt())
     }
 
     /** Called on the GL thread every frame: latch the newest UI image into the panel texture. */
@@ -447,7 +452,11 @@ class XrActivity : ComponentActivity() {
         view.setEGLContextClientVersion(3)
         view.setRenderer(object : GLSurfaceView.Renderer {
             var w = 1; var h = 1
-            override fun onSurfaceCreated(gl: GL10?, config: EGLConfig?) { nativePreviewInit() }
+            override fun onSurfaceCreated(gl: GL10?, config: EGLConfig?) {
+                nativePreviewInit()
+                // debug: --es preview_look "yaw,pitch,fov" (radians) points the preview's eye (screenshots without two fingers)
+                intent.getStringExtra("preview_look")?.split(",")?.mapNotNull { it.trim().toFloatOrNull() }?.takeIf { it.size == 3 }?.let { nativePreviewLook(it[0], it[1], it[2]) }
+            }
             override fun onSurfaceChanged(gl: GL10?, width: Int, height: Int) { w = width; h = height }
             override fun onDrawFrame(gl: GL10?) { nativePreviewDraw(w, h) }
         })

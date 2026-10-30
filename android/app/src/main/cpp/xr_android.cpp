@@ -48,28 +48,26 @@ void drainQueue() {
     for (auto& f : q) f();
 }
 
-/** The UI around the viewer, as on a desk with three monitors: the stage (MobileCAD's view area: banners, menus, dialogs,
- *  drawings) straight ahead a metre away behind the model, the tool bars low and close, tilted up towards the eyes like
- *  a keyboard, the feature tree on the left and the feature dialogs / task panels on the right, turned towards the
- *  viewer. Everything is see-through where MobileCAD draws nothing. Local frame: the viewer's eyes, -Z ahead. */
+/** MobileCAD's interface as surfaces around the viewer (MobileCAD's XrLayout): one window with the whole interface to the
+ *  left-front, turned towards the viewer, clear of the build plate ahead; the keypad (number pad / keyboard, shown only
+ *  while one is up) low and close on the right, tilted up towards the eyes like a keyboard. Everything is see-through
+ *  where MobileCAD draws nothing. Local frame: the viewer's eyes, -Z ahead. */
 void arrangeSheets(const std::vector<float>& r) {
     gIa.panel.sheets.clear();
-    if (r.size() < 16) return;
+    if (r.size() < 8) return;
     // sizes as at 1.5 px per dp (1600 px per metre: a dp is ~0.94 mm a metre away); a denser display is only sharper
-    const float k = gPxPerDp / 1.5f, ppm = 1600 * k, D = 1.0f, wing = 0.62f, tilt = 0.84f;
+    const float k = gPxPerDp / 1.5f, ppm = 1600 * k;
     auto sheet = [&](int i) { Sheet s; s.x = r[4 * i]; s.y = r[4 * i + 1]; s.w = r[4 * i + 2]; s.h = r[4 * i + 3]; s.pxPerM = ppm; return s; };
-    Sheet tree = sheet(0), stage = sheet(1), bars = sheet(2), side = sheet(3);
-    float ws = stage.w / ppm, hs = stage.h / ppm, top = 0.16f;
-    stage.local = {V3{0, top - hs / 2, -D}, Q{}, 1};
-    // the bars lie low and close, facing the eyes like a keyboard, in front of the build plate (which stands ~75 cm ahead)
-    Q tq = axisAngle({1, 0, 0}, -tilt);
-    bars.local = {V3{0, -0.62f, -0.55f}, tq, 1}; bars.pxPerM = 2200 * k;     // closer, so denser: about as wide to the eye
-    Q lq = axisAngle({0, 1, 0}, wing), rq = axisAngle({0, 1, 0}, -wing);
-    tree.local = {V3{-ws / 2, 0, -D} + rotate(lq, V3{-tree.w / ppm / 2, top - tree.h / ppm / 2, 0}), lq, 1};
-    side.local = {V3{ws / 2, 0, -D} + rotate(rq, V3{side.w / ppm / 2, top - side.h / ppm / 2, 0}), rq, 1};
-    for (Sheet* s : {&tree, &stage, &bars, &side}) s->home = s->local;
-    gIa.panel.sheets = {tree, stage, bars, side};
-    gIa.panel.seeThrough = true; gIa.panel.badgeSheet = 2;           // the scale badge hangs under the bars
+    Sheet win = sheet(0), pad = sheet(1);
+    const float D = 0.95f, yaw = 0.62f;                               // ~35 degrees to the left
+    Q wq = axisAngle({0, 1, 0}, yaw) * axisAngle({1, 0, 0}, 0.15f);   // its top leaning back a little, like a monitor
+    win.local = {rotate(axisAngle({0, 1, 0}, yaw), V3{0, 0, -D}) + V3{0, -0.12f, 0}, wq, 1};
+    pad.pxPerM = 2200 * k;                                             // closer, so denser: about as big to the eye
+    Q pq = axisAngle({0, 1, 0}, -0.35f) * axisAngle({1, 0, 0}, -0.6f);
+    pad.local = {V3{0.24f, -0.42f, -0.50f}, pq, 1};
+    for (Sheet* s : {&win, &pad}) s->home = s->local;
+    gIa.panel.sheets = {win, pad};
+    gIa.panel.seeThrough = true; gIa.panel.badgeSheet = 0;           // the scale badge hangs under the window
 }
 
 /** On the GL thread: the UI panel's texture (Java wraps it in a SurfaceTexture and renders MobileCAD's UI into it). */
@@ -316,6 +314,9 @@ JNIEXPORT void JNICALL Java_app_mobilecad_xr_XrActivity_nativePreviewTouch(JNIEn
             gPv.lastX = x; gPv.lastY = y;
         }
     });
+}
+JNIEXPORT void JNICALL Java_app_mobilecad_xr_XrActivity_nativePreviewLook(JNIEnv*, jobject, jfloat yaw, jfloat pitch, jfloat fov) {
+    post([yaw, pitch, fov] { gPv.yaw = yaw; gPv.pitch = pitch; gPv.fov = fov; });
 }
 JNIEXPORT void JNICALL Java_app_mobilecad_xr_XrActivity_nativePreviewDraw(JNIEnv*, jobject, jint w, jint h) {
     gPv.w = w; gPv.h = h;

@@ -219,6 +219,7 @@ private:
     std::map<int, GLuint> plateTexs; bool rimHot = false;    // plate textures by cell count (and highlight)
     Pose platePose() const;
     bool rimRay(const Pose& aim, float* t) const;
+    void drawPlate(Renderer& r, const M4& vp);   // the build plate's disc, grid label and axes
     Target target[2];
     HandInput last[2];
     Target aimAt(const Pose& aim) const;

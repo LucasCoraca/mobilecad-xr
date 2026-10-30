@@ -358,7 +358,7 @@ Interaction::Target Interaction::aimAt(const Pose& aim) const {
     // the nearer wins: a window behind a part of the model is hidden by it (renderOverUi), so the ray hits the part
     if (panelRay(aim, &t, &px, &py, false, &sh) && t < out.t) { out = {}; out.panel = true; out.t = t; out.px = px; out.py = py; out.sheet = sh; }
     if (badgeRay(aim, &t, &px) && t < out.t) { out = {}; out.badge = true; out.t = t; out.px = px; }
-    if (!out.panel && !out.badge && rimRay(aim, &t) && t < out.t) { out = {}; out.rim = true; out.t = t; }
+    if (rimRay(aim, &t) && t < out.t) { out = {}; out.rim = true; out.t = t; }
     return out;
 }
 
@@ -576,6 +576,46 @@ void Interaction::update(const HandInput in[2], float dt) {
     last[0] = hands[0]; last[1] = hands[1];
 }
 
+void Interaction::drawPlate(Renderer& r, const M4& vp) {
+    // the build plate: a see-through disc with a grid (bolder every 5 cells) and a rim, then the axes from the origin.
+    // The texture depends only on how many cells reach the rim (and the rim's highlight), so zooming reuses a few.
+    float R = plateRadius(), g = plateGrid(); int cells = (int)std::lround(R / g);
+    int key = cells * 2 + (int)rimHot; GLuint& plateTex = plateTexs[key];
+    if (!plateTex || !glIsTexture(plateTex)) {
+        const int N = 512; Canvas c(N, N); float band = std::max(0.1f * cells, 0.6f), px = 2.f * cells / N;   // in cells
+        for (int y = 0; y < N; ++y) for (int x = 0; x < N; ++x) {
+            float mx = (x + 0.5f) * px - cells, my = cells - (y + 0.5f) * px, rr = std::hypot(mx, my);
+            if (rr > cells) continue;
+            uint8_t* p = &c.px[(y * N + x) * 4];
+            auto set = [&](int r_, int g_, int b_, int a) { p[0] = r_; p[1] = g_; p[2] = b_; p[3] = a; };
+            if (rr > cells - band) { if (rimHot) set(66, 133, 230, 210); else set(78, 88, 100, 190); continue; }
+            set(34, 39, 46, 120);
+            auto on = [&](float v, float step, float w) { float m = std::fabs(std::fmod(std::fabs(v) + step / 2, step) - step / 2); return m < w * px; };
+            if (on(mx, 5, 1.2f) || on(my, 5, 1.2f)) set(150, 160, 172, 190);
+            else if (on(mx, 1, 0.7f) || on(my, 1, 0.7f)) set(105, 115, 128, 160);
+        }
+        plateTex = r.makeTexture(N, N, c.px.data());
+    }
+    float w = 2 * R * model.scale;
+    r.drawPanel(plateTex, false, platePose(), w, w, w / 2, vp);
+    {   // the grid spacing, lying on the rim nearest the viewer's side of the model (its -Y edge)
+        char lab[32]; std::snprintf(lab, sizeof lab, g < 1000 ? "GRID %g MM" : "GRID %g M", g < 1000 ? g : g / 1000);
+        auto it = labelTex.find(lab);
+        if (it == labelTex.end()) {
+            int W = Canvas::textWidth(lab, 2) + 16, H = 36; Canvas cv(W, H); cv.text(8, 2, lab, 2, 235, 238, 242);
+            it = labelTex.emplace(lab, std::make_pair(r.makeTexture(W, H, cv.px.data()), std::make_pair(W, H))).first;
+        }
+        float band = std::max(0.1f * cells, 0.6f) * g * model.scale, lh = band * 0.55f, lw = lh * it->second.second.first / it->second.second.second;
+        Pose lp = platePose(); lp.pos = lp.pos + rotate(model.rot, V3{0, -(R * model.scale - band / 2), 0.0005f});
+        r.drawPanel(it->second.first, false, lp, lw, lh, 0, vp);
+    }
+    Lines ax;
+    ax.add(apply(model, {0, 0, 0}), apply(model, {R, 0, 0}), {0.90f, 0.30f, 0.30f});
+    ax.add(apply(model, {0, 0, 0}), apply(model, {0, R, 0}), {0.35f, 0.80f, 0.35f});
+    ax.add(apply(model, {0, 0, 0}), apply(model, {0, 0, 0.35f * R}), {0.35f, 0.55f, 0.95f});
+    r.drawLines(ax, vp);
+}
+
 void Interaction::render(Renderer& r, const M4& vp, V3 eye) {
     viewer = eye;
     r.upload(scene);
@@ -587,45 +627,7 @@ void Interaction::render(Renderer& r, const M4& vp, V3 eye) {
         l.add({x * 0.2f, 0, -2}, {x * 0.2f, 0, 2}, c); l.add({-2, 0, x * 0.2f}, {2, 0, x * 0.2f}, c);
     }
     if (!scene.empty()) r.drawScene(scene, model, vp, eye, hoverRef(), selected, fade);
-    if (plate) {
-        // the build plate: a see-through disc with a grid (bolder every 5 cells) and a rim, then the axes from the origin.
-        // The texture depends only on how many cells reach the rim (and the rim's highlight), so zooming reuses a few.
-        float R = plateRadius(), g = plateGrid(); int cells = (int)std::lround(R / g);
-        int key = cells * 2 + (int)rimHot; GLuint& plateTex = plateTexs[key];
-        if (!plateTex || !glIsTexture(plateTex)) {
-            const int N = 512; Canvas c(N, N); float band = std::max(0.1f * cells, 0.6f), px = 2.f * cells / N;   // in cells
-            for (int y = 0; y < N; ++y) for (int x = 0; x < N; ++x) {
-                float mx = (x + 0.5f) * px - cells, my = cells - (y + 0.5f) * px, rr = std::hypot(mx, my);
-                if (rr > cells) continue;
-                uint8_t* p = &c.px[(y * N + x) * 4];
-                auto set = [&](int r_, int g_, int b_, int a) { p[0] = r_; p[1] = g_; p[2] = b_; p[3] = a; };
-                if (rr > cells - band) { if (rimHot) set(66, 133, 230, 210); else set(78, 88, 100, 190); continue; }
-                set(34, 39, 46, 120);
-                auto on = [&](float v, float step, float w) { float m = std::fabs(std::fmod(std::fabs(v) + step / 2, step) - step / 2); return m < w * px; };
-                if (on(mx, 5, 1.2f) || on(my, 5, 1.2f)) set(150, 160, 172, 190);
-                else if (on(mx, 1, 0.7f) || on(my, 1, 0.7f)) set(105, 115, 128, 160);
-            }
-            plateTex = r.makeTexture(N, N, c.px.data());
-        }
-        float w = 2 * R * model.scale;
-        r.drawPanel(plateTex, false, platePose(), w, w, w / 2, vp);
-        {   // the grid spacing, lying on the rim nearest the viewer's side of the model (its -Y edge)
-            char lab[32]; std::snprintf(lab, sizeof lab, g < 1000 ? "GRID %g MM" : "GRID %g M", g < 1000 ? g : g / 1000);
-            auto it = labelTex.find(lab);
-            if (it == labelTex.end()) {
-                int W = Canvas::textWidth(lab, 2) + 16, H = 36; Canvas cv(W, H); cv.text(8, 2, lab, 2, 235, 238, 242);
-                it = labelTex.emplace(lab, std::make_pair(r.makeTexture(W, H, cv.px.data()), std::make_pair(W, H))).first;
-            }
-            float band = std::max(0.1f * cells, 0.6f) * g * model.scale, lh = band * 0.55f, lw = lh * it->second.second.first / it->second.second.second;
-            Pose lp = platePose(); lp.pos = lp.pos + rotate(model.rot, V3{0, -(R * model.scale - band / 2), 0.0005f});
-            r.drawPanel(it->second.first, false, lp, lw, lh, 0, vp);
-        }
-        Lines ax;
-        ax.add(apply(model, {0, 0, 0}), apply(model, {R, 0, 0}), {0.90f, 0.30f, 0.30f});
-        ax.add(apply(model, {0, 0, 0}), apply(model, {0, R, 0}), {0.35f, 0.80f, 0.35f});
-        ax.add(apply(model, {0, 0, 0}), apply(model, {0, 0, 0.35f * R}), {0.35f, 0.55f, 0.95f});
-        r.drawLines(ax, vp);
-    }
+    if (plate) drawPlate(r, vp);
     r.drawLines(l, vp);
     // what the app's view draws over the model: always on top, as on a screen
     glDisable(GL_DEPTH_TEST);
@@ -745,13 +747,15 @@ ElemRef Interaction::hoverRef() const { return onViewport ? hostHover : hover[1]
 
 void Interaction::renderOverUi(Renderer& r, const M4& vp, V3 eye) {
     auto quads = uiQuads();
-    if (scene.empty() || quads.empty()) return;
-    // depth: "nearest" everywhere except on the windows, which get their own; the model then passes only in front of them
+    if ((scene.empty() && !plate) || quads.empty()) return;
+    // depth: "nearest" everywhere except on the windows, which get their own; the model and the build plate then pass
+    // only in front of them
     glClearDepthf(0.f); glClear(GL_DEPTH_BUFFER_BIT); glClearDepthf(1.f);
     glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE); glDepthFunc(GL_ALWAYS);
     for (const UiQuad& q : quads) r.drawRect(q.pose, q.w, q.h, vp);
     glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE); glDepthFunc(GL_LEQUAL);
-    r.drawScene(scene, model, vp, eye, hoverRef(), selected, fade);
+    if (!scene.empty()) r.drawScene(scene, model, vp, eye, hoverRef(), selected, fade);
+    if (plate) drawPlate(r, vp);
     glClear(GL_DEPTH_BUFFER_BIT);
 }
 
