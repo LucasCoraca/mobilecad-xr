@@ -1,6 +1,8 @@
 package app.mobilecad.xr
 
 import android.app.Presentation
+import app.mobilecad.i18n.Language
+import app.mobilecad.i18n.tr
 import android.graphics.Color
 import android.graphics.SurfaceTexture
 import android.hardware.display.DisplayManager
@@ -85,13 +87,14 @@ class XrActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         QtHostAccess.attach(this)                       // FreeCAD's QtCore needs a host activity (see MobileCAD)
+        Language.init(this)                             // the interface language, as in MobileCAD
         app = AppState(this)
         app.xr = true; app.xrChanged = { viewChanged() }
         app.start()
         app.whenReady { openFirstExample() }
         setContentView(TextView(this).apply {
             setBackgroundColor(Color.rgb(24, 27, 31)); setTextColor(Color.WHITE); textSize = 20f; gravity = android.view.Gravity.CENTER
-            text = "MobileCAD XR\nPut on your headset"
+            text = tr("MobileCAD XR\nPut on your headset")
         })
         nativeAttach()
         // the hand and Quest 3 controller models (WebXR input profiles, MIT: assets/models)
@@ -473,7 +476,7 @@ class XrActivity : ComponentActivity() {
         }
         val note = TextView(this).apply {
             setTextColor(Color.rgb(200, 208, 216)); textSize = 13f; setPadding(28, 18, 28, 18); setBackgroundColor(Color.argb(140, 0, 0, 0))
-            text = "No headset ($reason): preview of the XR scene. One finger is the controller (touch the UI to use it, the model or the space around it to pick, sketch and place points); two fingers look around."
+            text = tr("No headset (%1): preview of the XR scene. One finger is the controller (touch the UI to use it, the model or the space around it to pick, sketch and place points); two fingers look around.", reason)
         }
         setContentView(FrameLayout(this).apply {
             addView(view)
