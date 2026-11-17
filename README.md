@@ -194,6 +194,13 @@ python3 -I mobilecad/engine/package_runtime.py arm64-v8a android
 cd android && ./gradlew :app:assembleArm64Release
 ```
 
+## Contributing
+
+MobileCAD XR **does not accept code contributions**: because of supply-chain attacks, pull requests are closed unreviewed
+and every file or code shared in a pull request or issue is treated as a possible attack vector. Ideas and bug reports
+are welcome as issues; if one is taken up it is implemented here independently and you are credited. See
+[CONTRIBUTING.md](CONTRIBUTING.md).
+
 ## License
 
 GPL-3.0-or-later, like MobileCAD. Includes FreeCAD (LGPL-2.1-or-later), the Khronos OpenXR loader (Apache-2.0), the
